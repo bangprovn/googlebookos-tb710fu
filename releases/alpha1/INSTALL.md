@@ -27,9 +27,9 @@ change AVB flags, or relock a bootloader around this build.
 
 ## Check and unpack
 
-Download all nine `.img.gz` assets, `manifest.json`, `SHA256SUMS` and
-`IMAGES_SHA256SUMS` into one directory. Download the release documents as well;
-`SHA256SUMS` includes them.
+Download all release assets into one directory, including the nine `.img.gz`
+images, `kernel-source.tar.gz`, manifests, checksum lists and release documents.
+`SHA256SUMS` covers all of them except the checksum list itself.
 
 ```sh
 sha256sum -c SHA256SUMS
