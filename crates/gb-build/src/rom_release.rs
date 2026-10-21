@@ -46,7 +46,7 @@ pub struct Request {
     pub documents: BTreeMap<String, Image>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Asset {
     pub filename: String,
     pub bytes: u64,
@@ -198,10 +198,87 @@ fn compress(input: &Image, path: &Path) -> Result<Asset> {
 }
 
 pub fn prepare(request: &Request, destination: &Path) -> Result<Report> {
+    prepare_inner(request, destination, None)
+}
+/// Reuse an earlier tool-generated report's verified archives when raw content
+/// pins match. Archives are streamed into independent files and re-hashed;
+/// changed images still undergo full compression and decode verification.
+pub fn prepare_incremental(
+    request: &Request,
+    destination: &Path,
+    previous: &Path,
+) -> Result<Report> {
+    gb_core::separate_from_input(previous, destination)?;
+    let report: Report = gb_core::read_json(&previous.join("manifest.json"), 256 * 1024)?;
+    ensure!(
+        report.schema_version == 1
+            && report.device == request.device
+            && report.status == "images_packaged_and_roundtrip_verified",
+        "invalid prior release cache report"
+    );
+    prepare_inner(request, destination, Some((previous, &report)))
+}
+fn cached_archive(
+    directory: &Path,
+    name: &str,
+    input: &Image,
+    asset: &Asset,
+    destination: &Path,
+) -> Result<Asset> {
+    ensure!(
+        asset.filename == format!("{name}.img.gz")
+            && asset.roundtrip_verified
+            && digest_valid(&asset.sha256)
+            && asset.bytes > 0
+            && asset.bytes < 2_000_000_000,
+        "invalid cached release asset"
+    );
+    let cached = Image {
+        path: directory.join(&asset.filename),
+        sha256: asset.sha256.clone(),
+        bytes: asset.bytes,
+    };
+    let mut source = open(&cached)?;
+    let mut out = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)?;
+    let mut hash = Sha256::new();
+    let mut bytes = 0_u64;
+    let mut buffer = vec![0; 1024 * 1024];
+    loop {
+        checkpoint()?;
+        let n = source.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        bytes += n as u64;
+        ensure!(bytes <= asset.bytes, "cached archive grew");
+        hash.update(&buffer[..n]);
+        out.write_all(&buffer[..n])?;
+    }
+    ensure!(
+        bytes == asset.bytes && format!("{:x}", hash.finalize()) == asset.sha256,
+        "cached archive integrity failed"
+    );
+    out.sync_all()?;
+    ensure!(
+        asset.image_bytes == input.bytes && asset.image_sha256.eq_ignore_ascii_case(&input.sha256),
+        "cached raw image identity differs"
+    );
+    Ok(asset.clone())
+}
+fn prepare_inner(
+    request: &Request,
+    destination: &Path,
+    previous: Option<(&Path, &Report)>,
+) -> Result<Report> {
     request.validate()?;
     ensure!(!destination.exists(), "release destination already exists");
     for input in request.images.values().chain(request.documents.values()) {
-        gb_core::separate_from_input(&input.path, destination)?;
+        if input.path.exists() {
+            gb_core::separate_from_input(&input.path, destination)?;
+        }
     }
     let parent = destination
         .parent()
@@ -222,7 +299,22 @@ pub fn prepare(request: &Request, destination: &Path) -> Result<Report> {
     let mut images = BTreeMap::new();
     for (name, input) in &request.images {
         let path = staging.path().join(format!("{name}.img.gz"));
-        images.insert(name.clone(), compress(input, &path)?);
+        let cached = previous.and_then(|(directory, report)| {
+            report
+                .images
+                .get(name)
+                .filter(|asset| {
+                    asset.image_bytes == input.bytes
+                        && asset.image_sha256.eq_ignore_ascii_case(&input.sha256)
+                })
+                .map(|asset| (directory, asset))
+        });
+        let asset = if let Some((directory, asset)) = cached {
+            cached_archive(directory, name, input, asset, &path)?
+        } else {
+            compress(input, &path)?
+        };
+        images.insert(name.clone(), asset);
     }
     for (name, input) in &request.documents {
         let mut data = Vec::new();
@@ -261,7 +353,14 @@ pub fn prepare(request: &Request, destination: &Path) -> Result<Report> {
     for path in paths {
         sums.push_str(&format!(
             "{}  {}\n",
-            hash_file(&path)?,
+            report
+                .images
+                .values()
+                .find(|asset| path
+                    .file_name()
+                    .is_some_and(|n| n == asset.filename.as_str()))
+                .map(|asset| Ok(asset.sha256.clone()))
+                .unwrap_or_else(|| hash_file(&path))?,
             path.file_name()
                 .context("missing filename")?
                 .to_str()
@@ -317,6 +416,50 @@ mod tests {
                 .contains(dir.path().to_str().unwrap())
         );
         assert!(prepare(&r, &a).is_err());
+    }
+    #[test]
+    fn cached_archives_survive_missing_raw_sources_and_reject_corruption() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = fixture(dir.path());
+        let first = dir.path().join("first");
+        prepare(&r, &first).unwrap();
+        fs::remove_file(&r.images["boot"].path).unwrap();
+        let second = dir.path().join("second");
+        prepare_incremental(&r, &second, &first).unwrap();
+        assert_eq!(
+            fs::read(first.join("SHA256SUMS")).unwrap(),
+            fs::read(second.join("SHA256SUMS")).unwrap()
+        );
+        fs::write(first.join("boot.img.gz"), b"corrupt cache").unwrap();
+        let failed = dir.path().join("failed");
+        assert!(prepare_incremental(&r, &failed, &first).is_err());
+        assert!(!failed.exists());
+    }
+    #[test]
+    fn changed_images_are_rebuilt_while_other_archives_are_reused() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut r = fixture(dir.path());
+        let first = dir.path().join("first");
+        prepare(&r, &first).unwrap();
+        let data = b"different signed metadata fixture";
+        let p = dir.path().join("changed");
+        fs::write(&p, data).unwrap();
+        r.images.insert(
+            "vbmeta".into(),
+            Image {
+                path: p,
+                sha256: gb_core::digest(data),
+                bytes: data.len() as u64,
+            },
+        );
+        fs::remove_file(&r.images["boot"].path).unwrap();
+        let out = dir.path().join("updated");
+        let report = prepare_incremental(&r, &out, &first).unwrap();
+        assert_eq!(report.images["vbmeta"].image_sha256, gb_core::digest(data));
+        assert_ne!(
+            fs::read(out.join("vbmeta.img.gz")).unwrap(),
+            fs::read(first.join("vbmeta.img.gz")).unwrap()
+        );
     }
     #[test]
     fn checksum_failure_leaves_no_partial_release() {
