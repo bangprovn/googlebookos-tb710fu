@@ -1,0 +1,279 @@
+--- a/hypervisor/src/gunyah/mthp.rs
++++ b/hypervisor/src/gunyah/mthp.rs
+@@ -27,7 +27,6 @@
+ // ── constants ────────────────────────────────────────────────────────────────
+ 
+ const THP_SIZE: u64 = 2 * 1024 * 1024; // 2 MB
+-const MAP_UNIT: u64 = 64 * 1024; // 64 KB – smallest collapse unit
+ const BATCH_SIZE: u64 = 64 * 1024 * 1024; // 64 MB populate batch
+ const COMPACT_INTERVAL: usize = 4; // compact every N batches (256 MB)
+ 
+@@ -48,20 +47,8 @@
+ 
+ // ── collapse cascade table ──────────────────────────────────────────────────
+ 
+-struct CollapseLevel {
+-    size: u64,
+-    order: u8,
+-    name: &'static str,
+-}
+-
+-static COLLAPSE_LEVELS: &[CollapseLevel] = &[
+-    CollapseLevel { size: 2 * 1024 * 1024, order: 9, name: "2MB" },
+-    CollapseLevel { size: 1024 * 1024, order: 8, name: "1MB" },
+-    CollapseLevel { size: 512 * 1024, order: 7, name: "512KB" },
+-    CollapseLevel { size: 256 * 1024, order: 6, name: "256KB" },
+-    CollapseLevel { size: 128 * 1024, order: 5, name: "128KB" },
+-    CollapseLevel { size: 64 * 1024, order: 4, name: "64KB" },
+-];
++#[path = "pmd_collapse.rs"]
++mod pmd_collapse;
+ 
+ // ── helpers ─────────────────────────────────────────────────────────────────
+ 
+@@ -86,7 +73,8 @@
+ pub struct LendPrepResult {
+     /// Per-2MB-chunk: `true` means NOT a 2MB THP (i.e. needs small-page LEND).
+     pub need_small: Vec<bool>,
+-    /// Total bytes that were successfully collapsed to ≥ 64 KB folios.
++    /// Bytes with successful complete-PMD MADV_COLLAPSE advice. This is not
++    /// proof of physical contiguity after subsequent long-term pin migration.
+     pub large_page_bytes: u64,
+     /// Hard verification that every page in the region is genuinely resolvable
+     /// (`MADV_POPULATE_READ` over the whole range succeeded). Phase 2's
+@@ -109,7 +97,7 @@
+ /// Implements the four-phase strategy from QEMU's `gunyah_add_mem`:
+ ///   Phase 1 – drop caches, compact, enable mTHP intermediate sizes
+ ///   Phase 2 – populate in 64 MB batches (MADV_POPULATE_WRITE)
+-///   Phase 3 – cascading MADV_COLLAPSE (2 MB → 64 KB)
++///   Phase 3 – bounded complete-PMD MADV_COLLAPSE retries (2 MB)
+ ///   Phase 4 – mlock
+ ///
+ /// # Safety
+@@ -197,103 +185,33 @@
+ 
+     // ── Phase 3: cascading MADV_COLLAPSE (2 MB → 64 KB) ────────────
+ 
+-    let map_count = (size / MAP_UNIT) as usize;
+-    let mut order_map = vec![0u8; map_count];
+-    let mut large_page_bytes: u64 = 0;
+-
+-    {
+-        info!("GH: Phase 3: cascading MADV_COLLAPSE (2MB -> 64KB) ...");
+-
+-        for level in COLLAPSE_LEVELS {
+-            let csize = level.size;
+-            let corder = level.order;
+-            let units_per_chunk = (csize / MAP_UNIT) as usize;
+-            let num_chunks = (size / csize) as usize;
+-            let mut collapsed: u64 = 0;
+-            let mut skipped: u64 = 0;
+-            let mut failed: u64 = 0;
+-            let mut last_err: i32 = 0;
+-
+-            for ci in 0..num_chunks {
+-                let map_base = ci * units_per_chunk;
+-
+-                // Skip if any sub-unit already collapsed
+-                let all_free = (0..units_per_chunk).all(|u| order_map[map_base + u] == 0);
+-                if !all_free {
+-                    skipped += 1;
+-                    continue;
+-                }
+-
+-                let ptr = host_addr.add((ci as u64 * csize) as usize);
+-                let ret = libc::madvise(ptr as *mut libc::c_void, csize as usize, MADV_COLLAPSE);
+-                if ret == 0 {
+-                    for u in 0..units_per_chunk {
+-                        order_map[map_base + u] = corder;
+-                    }
+-                    collapsed += 1;
+-                } else {
+-                    failed += 1;
+-                    last_err = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+-                }
+-            }
+-
+-            info!(
+-                "GH:   {} pass 0: {} OK, {} skipped, {} failed (err={})",
+-                level.name, collapsed, skipped, failed, last_err
+-            );
+-        }
+-
+-        // Summary
+-        let mut order_total = [0u64; 10];
+-        let mut uncollapsed: u64 = 0;
+-        for &o in &order_map {
+-            if o > 0 && (o as usize) <= 9 {
+-                order_total[o as usize] += 1;
+-            } else {
+-                uncollapsed += 1;
+-            }
+-        }
+-
+-        info!("GH: Phase 3 done — collapse summary (per 64KB unit):");
+-        for o in (4..=9).rev() {
+-            if order_total[o] > 0 {
+-                let size_kb = 4u64 << o;
+-                let mb = (order_total[o] * 64) / 1024;
+-                info!("GH:   {}KB: {} units = {} MB", size_kb, order_total[o], mb);
+-            }
+-        }
+-        info!(
+-            "GH:   uncollapsed (4KB): {} units = {} MB",
+-            uncollapsed,
+-            (uncollapsed * 64) / 1024
+-        );
+-
+-        large_page_bytes = (map_count as u64 - uncollapsed) * MAP_UNIT;
+-
+-        // Re-populate any regions left unpopulated by retry passes
+-        for mi in 0..map_count {
+-            if order_map[mi] == 0 {
+-                let off = mi as u64 * MAP_UNIT;
+-                let ptr = host_addr.add(off as usize);
+-                let ret =
+-                    libc::madvise(ptr as *mut libc::c_void, MAP_UNIT as usize, MADV_POPULATE_WRITE);
+-                if ret != 0 {
+-                    let npages = MAP_UNIT / 4096;
+-                    for pg in 0..npages {
+-                        let p = ptr.add((pg * 4096) as usize);
+-                        std::ptr::write_volatile(p, std::ptr::read_volatile(p));
+-                    }
+-                }
+-            }
+-        }
+-    }
+-
+-    info!(
+-        "GH: === large-page coverage: {} / {} MB ({:.1}%) ===",
+-        large_page_bytes >> 20,
+-        size >> 20,
+-        large_page_bytes as f64 * 100.0 / size as f64
+-    );
++    // MADV_COLLAPSE is a PMD request, including on hosts which support mTHP.
++    // Short sub-PMD successes do not prove smaller folios and must not hide
++    // failed PMD requests. Retry only failed complete 2 MiB ranges, before
++    // mlock/whole-window long-term pin and before any firmware transfer.
++    let mut collapse = pmd_collapse::PmdCollapse::new(size);
++    let started = std::time::Instant::now();
++    let mut pass = 0;
++    let mut last_err = 0;
++    while let Some((attempted, failed)) = collapse.run_pass(started.elapsed().as_millis(), |off| {
++        let ptr = host_addr.add(off as usize);
++        let ok = libc::madvise(ptr as *mut libc::c_void,
++                              pmd_collapse::PMD_BYTES as usize, MADV_COLLAPSE) == 0;
++        if !ok { last_err = std::io::Error::last_os_error().raw_os_error().unwrap_or(0); }
++        ok
++    }) {
++        info!("GH-PMD: pass={} attempted={} failed={} last_errno={}",
++              pass, attempted, failed, last_err);
++        pass += 1;
++        if failed == 0 { break; }
++        // A bounded pause permits reclaim/compaction progress. No sysfs policy
++        // changes or privileged allocation hooks are required by this path.
++        std::thread::sleep(std::time::Duration::from_millis(100));
++    }
++    let large_page_bytes = collapse.advised_bytes();
++    let need_small = collapse.missing().to_vec();
++    info!("GH-PMD: successful complete-PMD advice={} / {} MiB; physical backing must still be checked by the kernel",
++          large_page_bytes >> 20, size >> 20);
+ 
+     // ── Phase 4: mlock ──────────────────────────────────────────────
+ 
+@@ -307,18 +225,6 @@
+              reclaimed while the RM's stage-2 keeps the old ones (check RLIMIT_MEMLOCK)",
+             std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
+         );
+-    }
+-
+-    // ── Build need_small bitmap from order_map ──────────────────────
+-
+-    let total_chunks = (size / THP_SIZE) as usize;
+-    let units_per_thp = (THP_SIZE / MAP_UNIT) as usize;
+-    let mut need_small = vec![false; total_chunks];
+-    for ci in 0..total_chunks {
+-        let map_base = ci * units_per_thp;
+-        // Mark as THP only if ALL 64KB units are order >= 9 (2MB THP)
+-        let is_thp = (0..units_per_thp).all(|u| order_map[map_base + u] >= 9);
+-        need_small[ci] = !is_thp;
+     }
+ 
+     // ── Hard verification: every page must genuinely be resolvable ──
+--- /dev/null
++++ b/hypervisor/src/gunyah/pmd_collapse.rs
+@@ -0,0 +1,74 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++// Bounded bookkeeping for MADV_COLLAPSE, which requests PMD-sized THPs.
++// Successful advice on a sub-PMD range does not establish a smaller folio.
++pub const PMD_BYTES: u64 = 2 << 20;
++pub const MAX_PASSES: usize = 4;
++pub const MAX_ELAPSED_MS: u128 = 10_000;
++
++pub struct PmdCollapse {
++    missing: Vec<bool>,
++    passes: usize,
++}
++
++impl PmdCollapse {
++    pub fn new(bytes: u64) -> Self {
++        Self { missing: vec![true; (bytes / PMD_BYTES) as usize], passes: 0 }
++    }
++
++    /// Deadline is checked between passes, not inside a kernel syscall.
++    /// Returns attempted/failed requests; completed ranges are never retried.
++    pub fn run_pass<F>(&mut self, elapsed_ms: u128, mut collapse: F) -> Option<(usize, usize)>
++    where F: FnMut(u64) -> bool {
++        if self.passes == MAX_PASSES || elapsed_ms >= MAX_ELAPSED_MS || self.complete() {
++            return None;
++        }
++        self.passes += 1;
++        let mut attempted = 0;
++        let mut failed = 0;
++        for (i, missing) in self.missing.iter_mut().enumerate() {
++            if *missing {
++                attempted += 1;
++                *missing = !collapse(i as u64 * PMD_BYTES);
++                failed += usize::from(*missing);
++            }
++        }
++        Some((attempted, failed))
++    }
++
++    pub fn complete(&self) -> bool { !self.missing.iter().any(|v| *v) }
++    pub fn missing(&self) -> &[bool] { &self.missing }
++    pub fn advised_bytes(&self) -> u64 {
++        self.missing.iter().filter(|v| !**v).count() as u64 * PMD_BYTES
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn retry_only_failed_ranges_and_never_claim_a_tail() {
++        let mut p = PmdCollapse::new(3 * PMD_BYTES + (1 << 20));
++        let mut seen = Vec::new();
++        assert_eq!(p.run_pass(0, |off| { seen.push(off); off != PMD_BYTES }), Some((3, 1)));
++        assert_eq!(seen, vec![0, PMD_BYTES, 2 * PMD_BYTES]);
++        assert_eq!(p.advised_bytes(), 2 * PMD_BYTES);
++        seen.clear();
++        assert_eq!(p.run_pass(100, |off| { seen.push(off); true }), Some((1, 0)));
++        assert_eq!(seen, vec![PMD_BYTES]);
++        assert_eq!(p.advised_bytes(), 3 * PMD_BYTES);
++        assert_eq!(p.run_pass(200, |_| panic!("completed range retried")), None);
++        assert_eq!(p.missing(), &[false, false, false]);
++    }
++
++    #[test]
++    fn persistent_failure_is_bounded_by_passes_and_time() {
++        let mut p = PmdCollapse::new(PMD_BYTES);
++        for _ in 0..MAX_PASSES { assert_eq!(p.run_pass(0, |_| false), Some((1, 1))); }
++        assert_eq!(p.run_pass(0, |_| panic!("retry budget exceeded")), None);
++        assert_eq!(p.advised_bytes(), 0);
++        let mut p = PmdCollapse::new(PMD_BYTES);
++        assert_eq!(p.run_pass(MAX_ELAPSED_MS, |_| panic!("deadline exceeded")), None);
++        assert!(!p.complete());
++    }
++}

@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "status": "host_egl_capability_advertisements",
+  "uid": 2000,
+  "egl_vendor": "Example EGL",
+  "egl_version": "1.5",
+  "gles_vendor": "Example vendor",
+  "gles_renderer": "Example GPU",
+  "gles_version": "OpenGL ES 3.2",
+  "egl_extensions": {
+    "EGL_EXT_image_dma_buf_import": false,
+    "EGL_EXT_image_dma_buf_import_modifiers": false,
+    "EGL_ANDROID_image_native_buffer": true,
+    "EGL_ANDROID_get_native_client_buffer": true,
+    "EGL_ANDROID_native_fence_sync": true,
+    "EGL_KHR_fence_sync": true,
+    "EGL_KHR_surfaceless_context": true,
+    "EGL_KHR_gl_texture_2D_image": true
+  },
+  "gles_extensions": {
+    "GL_OES_EGL_image": true,
+    "GL_EXT_EGL_image_storage": true,
+    "GL_EXT_memory_object": true,
+    "GL_EXT_memory_object_fd": true,
+    "GL_EXT_semaphore": false,
+    "GL_EXT_semaphore_fd": false
+  },
+  "egl_create_image_entrypoint": true,
+  "egl_native_client_buffer_entrypoint": true,
+  "memory_import_verified": false,
+  "gpu_rendering_verified": false,
+  "original_vmm_namespace_verified": false,
+  "owner_content_read": false,
+  "full_port_verified": false
+}

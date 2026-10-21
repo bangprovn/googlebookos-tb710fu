@@ -1,0 +1,13 @@
+; Fixed immutable mount worker, using the platform's existing confined mount
+; setup domain. Android forbids other non-init domains from mounting onto a
+; system_file directory. No new domain or mount/capability permission is added.
+; The worker accepts only enable/disable and verifies fixed read-only VMMs.
+(type gb_terminal_mount_exec)
+(roletype object_r gb_terminal_mount_exec)
+(typeattributeset file_type (gb_terminal_mount_exec))
+(typeattributeset exec_type (gb_terminal_mount_exec))
+(typeattributeset system_file_type (gb_terminal_mount_exec))
+(allow init gb_terminal_mount_exec (file (read getattr map open execute)))
+(typetransition init gb_terminal_mount_exec process dexopt_chroot_setup)
+(allow dexopt_chroot_setup gb_terminal_mount_exec (file (read getattr map open execute entrypoint)))
+(allow dexopt_chroot_setup crosvm_exec (file (read getattr open)))

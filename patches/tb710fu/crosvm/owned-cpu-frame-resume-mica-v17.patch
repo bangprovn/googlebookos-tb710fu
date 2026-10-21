@@ -1,0 +1,146 @@
+--- a/libs/android_display_backend/crosvm_android_display_client.cpp
++++ b/libs/android_display_backend/crosvm_android_display_client.cpp
+@@ -18,6 +18,7 @@
+ #include <aidl/android/crosvm/DisplayConfig.h>
+ #include <aidl/android/system/virtualizationservice_internal/IVirtualizationServiceInternal.h>
+ #include "avf-display-mica-v17.h"
++#include "display-cpu-frame-store.h"
+ #include <android-base/logging.h>
+ #include <android-base/result.h>
+ #include <android-base/scopeguard.h>
+@@ -2318,7 +2319,9 @@
+ // on the other end of the DisplayService is not in the foreground / is paused.
+ class AndroidDisplaySurface {
+ public:
+-    AndroidDisplaySurface(const std::string& name) : mName(name) {}
++    AndroidDisplaySurface(const std::string& name)
++        : mName(name), mUseOwnedCpuFrames(
++                gbAvfDisplayMode(getenv("GB_AVF_DISPLAY_SERVICE")) == GbAvfDisplayMode::MicaV17) {}
+ 
+     Result<void> setNativeSurface(Surface* surface) {
+         {
+@@ -2338,6 +2341,11 @@
+             if (sc.IsSupported()) {
+                 mSurfaceControl = sc.ASurfaceControl_createFromWindow(anw, mName.c_str());
+             }
++            if (mUseOwnedCpuFrames) {
++                if (auto ret = drawOwnedCpuFrameLocked(true); !ret.ok()) {
++                    LOG(WARNING) << "gb-avf-display: cached_frame_replay_failed";
++                }
++            }
+         }
+ 
+         mNativeSurfaceReady.notify_one();
+@@ -2371,6 +2379,9 @@
+         std::unique_lock lk(mSurfaceMutex);
+ 
+         LOG(INFO) << "display surface " << mName << " configure " << width << "x" << height;
++        if (mUseOwnedCpuFrames && !mCpuFrames.configure(width, height)) {
++            return Error() << "Invalid CPU frame geometry or outstanding producer frame";
++        }
+         mRequestedSurfaceDimensions = Rect{
+                 .width = width,
+                 .height = height,
+@@ -2380,6 +2391,7 @@
+         // frames of the new size get scaled into stale-geometry buffers (squashed display).
+         mNativeSurfaceNeedsConfiguring = true;
+ 
++        if (mUseOwnedCpuFrames) return {};
+         if (auto ret = mSinkBuffer.configure(width, height, kFormat); !ret.ok()) {
+             return Error() << "Failed to configure sink buffer: " << ret.error();
+         }
+@@ -2396,6 +2408,18 @@
+ 
+     Result<void> lock(ANativeWindow_Buffer* out_buffer) {
+         std::unique_lock lk(mSurfaceMutex);
++        if (mUseOwnedCpuFrames) {
++            auto* pixels = mCpuFrames.beginFrame();
++            if (!pixels) return Error() << "CPU frame unavailable or already borrowed";
++            *out_buffer = ANativeWindow_Buffer{
++                    .width = static_cast<int32_t>(mCpuFrames.width()),
++                    .height = static_cast<int32_t>(mCpuFrames.height()),
++                    .stride = static_cast<int32_t>(mCpuFrames.width()),
++                    .format = kFormat,
++                    .bits = pixels,
++            };
++            return {};
++        }
+ 
+         Surface* surface = mNativeSurface.get();
+         if (surface == nullptr) {
+@@ -2564,6 +2588,10 @@
+ 
+     Result<void> unlockAndPost() {
+         std::unique_lock lk(mSurfaceMutex);
++        if (mUseOwnedCpuFrames) {
++            if (!mCpuFrames.publishFrame()) return Error() << "No CPU frame to publish";
++            return drawOwnedCpuFrameLocked(false);
++        }
+ 
+         Surface* surface = mNativeSurface.get();
+         if (surface == nullptr) {
+@@ -2610,6 +2638,9 @@
+     // Saves the last frame drawn
+     Result<void> saveFrame() {
+         std::unique_lock lk(mSurfaceMutex);
++        // Every completed mica CPU frame is already owned. Never read an
++        // in-flight producer borrow or an unlocked gralloc buffer on Binder.
++        if (mUseOwnedCpuFrames) return {};
+         if (!mLastBufferValid) return {};
+         if (auto ret = copyBuffer(mLastBuffer, mSavedFrameBuffer); !ret.ok()) {
+             return Error() << "Failed to copy frame: " << ret.error();
+@@ -2621,6 +2652,7 @@
+     // Draws the saved frame
+     Result<void> drawSavedFrame() {
+         std::unique_lock lk(mSurfaceMutex);
++        if (mUseOwnedCpuFrames) return drawOwnedCpuFrameLocked(true);
+         if (!mSavedFrameValid) return {};
+         Surface* surface = mNativeSurface.get();
+         if (surface == nullptr) {
+@@ -2652,6 +2684,37 @@
+     const std::string& name() const { return mName; }
+ 
+ private:
++    // The producer writes only the owned back frame. Surface replacement can
++    // therefore replay the completed front while a guest update is in flight,
++    // without retaining a borrowed gralloc mapping across Binder callbacks.
++    Result<void> drawOwnedCpuFrameLocked(bool replay) {
++        const auto* pixels = mCpuFrames.completedPixels();
++        Surface* surface = mNativeSurface.get();
++        if (!pixels || !surface) return {};
++        ANativeWindow* anw = surface->get();
++        if (!anw) return Error() << "Failed to get ANativeWindow";
++        if (auto ret = prepareNativeWindowLocked(anw, false); !ret.ok()) return ret;
++        ANativeWindow_Buffer destination;
++        if (ANativeWindow_lock(anw, &destination, nullptr) != 0) {
++            return Error() << "Failed to lock CPU frame destination";
++        }
++        ANativeWindow_Buffer source{
++                .width = static_cast<int32_t>(mCpuFrames.width()),
++                .height = static_cast<int32_t>(mCpuFrames.height()),
++                .stride = static_cast<int32_t>(mCpuFrames.width()),
++                .format = kFormat,
++                .bits = const_cast<uint32_t*>(pixels),
++        };
++        if (frameHashEnabled()) logFrameHash(mName, source);
++        auto copied = copyBuffer(source, destination);
++        // Always release the native-window borrow, including copy failures.
++        const int posted = ANativeWindow_unlockAndPost(anw);
++        if (!copied.ok()) return copied;
++        if (posted != 0) return Error() << "Failed to post CPU frame destination";
++        if (replay) LOG(INFO) << "gb-avf-display: cached_frame_presented";
++        return {};
++    }
++
+     void clearNativeSurfaceLocked(bool disconnect) {
+         const bool hadSurface = mNativeSurface != nullptr;
+         if (disconnect) {
+@@ -2792,6 +2855,8 @@
+     static constexpr const int kFormat = HAL_PIXEL_FORMAT_RGBA_8888;
+ 
+     std::string mName;
++    const bool mUseOwnedCpuFrames;
++    GbCpuFrameStore mCpuFrames;
+ 
+     std::mutex mSurfaceMutex;
+     std::unique_ptr<Surface> mNativeSurface;

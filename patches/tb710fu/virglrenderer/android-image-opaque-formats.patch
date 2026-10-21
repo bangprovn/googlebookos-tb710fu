@@ -1,0 +1,81 @@
+--- a/src/gb_android_image_bridge.h
++++ b/src/gb_android_image_bridge.h
+@@ -54,6 +54,24 @@
+          " reset_errno=%d refused=%u\n",w,h,fourcc,modifier,planes,pitch,offset,
+          bytes,seek_errno,reset,reset_errno,refused);
+ }
++/* Explicit opaque formats retain RGBX sampling semantics, never source alpha.
++ * No implicit modifier is accepted. GB_IMAGE_OPAQUE_FORMATS is a test marker. */
++#define GB_IMAGE_OPAQUE_FORMATS 1
++static bool gb_image_format(uint32_t fourcc, bool *blit, uint32_t *ahb_format)
++{
++   bool bgra, opaque;
++   switch (fourcc) {
++   case 0x34324241u: bgra=false; opaque=false; break; /* ABGR8888 */
++   case 0x34325241u: bgra=true; opaque=false; break;  /* ARGB8888 */
++   case 0x34324258u: bgra=false; opaque=true; break;  /* XBGR8888 */
++   case 0x34325258u: bgra=true; opaque=true; break;   /* XRGB8888 */
++   default: return false;
++   }
++   if (blit) *blit=bgra;
++   /* Android R8G8B8A8_UNORM=1; R8G8B8X8_UNORM=2. Both use Vulkan RGBA8. */
++   if (ahb_format) *ahb_format=opaque?2u:1u;
++   return true;
++}
+ /* Pure admission rules, also exercised by the host mock harness. */
+ enum gb_image_layout_refusal {
+    GB_LAYOUT_EXTENT=1u, GB_LAYOUT_PLANES=2u, GB_LAYOUT_MODIFIER=4u,
+@@ -67,7 +85,7 @@
+    if (!w || !h || w>8192 || h>8192) refused|=GB_LAYOUT_EXTENT;
+    if (planes!=1) refused|=GB_LAYOUT_PLANES;
+    if (modifier!=0) refused|=GB_LAYOUT_MODIFIER;
+-   if (fourcc!=0x34324241u && fourcc!=0x34325241u) refused|=GB_LAYOUT_FORMAT;
++   if (!gb_image_format(fourcc,NULL,NULL)) refused|=GB_LAYOUT_FORMAT;
+    if (pitch<(uint64_t)w*4 || pitch>131072 || pitch%4) refused|=GB_LAYOUT_PITCH;
+    if (!bytes || bytes>GB_IMAGE_LIMIT) refused|=GB_LAYOUT_BYTES;
+    if (!h || (uint64_t)offset+(uint64_t)(h-1)*pitch+(uint64_t)w*4>bytes) refused|=GB_LAYOUT_RANGE;
+@@ -205,7 +223,9 @@
+    while (!atomic_compare_exchange_weak(&gb_image_slots,&slots,slots+1));
+    struct gb_android_image *g=calloc(1,sizeof(*g));
+    if (!g) { atomic_fetch_sub(&gb_image_slots,1); return NULL; }
+-   g->width=w;g->height=h;g->import_fd=-1;g->sync_fd=-1;g->blit=fourcc==0x34325241u;
++   g->width=w;g->height=h;g->import_fd=-1;g->sync_fd=-1;
++   uint32_t ahb_format;
++   if (!gb_image_format(fourcc,&g->blit,&ahb_format)) goto fail;
+    g->sync_fd=fcntl(fd,F_DUPFD_CLOEXEC,3);
+    g->import_fd=fcntl(fd,F_DUPFD_CLOEXEC,3);
+    if (g->sync_fd<0 || g->import_fd<0) goto fail;
+@@ -281,10 +301,10 @@
+    query.format=VK_FORMAT_R8G8B8A8_UNORM;query.tiling=VK_IMAGE_TILING_OPTIMAL;query.usage=usage;
+    GB_VK("ahb_format",g->GetPhysicalDeviceImageFormatProperties2(g->physical,&query,&result));
+    if (!(ahb_external.externalMemoryProperties.externalMemoryFeatures&VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT) || result.imageFormatProperties.maxExtent.width<w || result.imageFormatProperties.maxExtent.height<h) goto fail;
+-   struct gb_ahb_desc desc={.width=w,.height=h,.layers=1,.format=1,.usage=ahb_usage.androidHardwareBufferUsage|768u};
++   struct gb_ahb_desc desc={.width=w,.height=h,.layers=1,.format=ahb_format,.usage=ahb_usage.androidHardwareBufferUsage|768u};
+    if ((desc.usage&(1u<<14)) || g->allocate(&desc,&g->ahb) || !g->ahb) goto fail;
+    struct gb_ahb_desc described={0};g->describe(g->ahb,&described);
+-   if (described.width!=w || described.height!=h || described.layers!=1 || described.format!=1 || (described.usage&768u)!=768u || (described.usage&(1u<<14)) || described.stride<w) goto fail;
++   if (described.width!=w || described.height!=h || described.layers!=1 || described.format!=ahb_format || (described.usage&768u)!=768u || (described.usage&(1u<<14)) || described.stride<w) goto fail;
+    VkAndroidHardwareBufferFormatPropertiesANDROID af={.sType=VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_FORMAT_PROPERTIES_ANDROID};
+    VkAndroidHardwareBufferPropertiesANDROID ap={.sType=VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_PROPERTIES_ANDROID,.pNext=&af};
+    GB_VK("ahb_properties",g->GetAndroidHardwareBufferPropertiesANDROID(g->device,g->ahb,&ap));
+@@ -303,7 +323,7 @@
+    VkCommandBufferAllocateInfo command={.sType=VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,.commandPool=g->pool,.level=VK_COMMAND_BUFFER_LEVEL_PRIMARY,.commandBufferCount=1};
+    GB_VK("command",g->AllocateCommandBuffers(g->device,&command,&g->command));
+    VkFenceCreateInfo fence={.sType=VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};GB_VK("fence",g->CreateFence(g->device,&fence,NULL,&g->fence));
+-   gb_image_log(g->blit?"created_bgra":"created_rgba",0,w,h);return g;
++   gb_image_log(ahb_format==2u?(g->blit?"created_xrgb":"created_xbgr"):(g->blit?"created_bgra":"created_rgba"),0,w,h);return g;
+ fail:
+    gb_image_log("create_failed",EINVAL,w,h);gb_android_image_destroy(g);return NULL;
+ }
+--- a/src/vrend_renderer.c
++++ b/src/vrend_renderer.c
+@@ -12427,7 +12427,8 @@
+       }
+ 
+       if (virgl_egl_android_bridge_required(egl)) {
+-         if (args->format!=VIRGL_FORMAT_R8G8B8A8_UNORM && args->format!=VIRGL_FORMAT_B8G8R8A8_UNORM) {FREE(gr);return EINVAL;}
++         if (args->format!=VIRGL_FORMAT_R8G8B8A8_UNORM && args->format!=VIRGL_FORMAT_B8G8R8A8_UNORM &&
++             args->format!=VIRGL_FORMAT_R8G8B8X8_UNORM && args->format!=VIRGL_FORMAT_B8G8R8X8_UNORM) {FREE(gr);return EINVAL;}
+          gr->egl_image=virgl_egl_image_from_android_bridge(egl,args->width,args->height,drm_format,args->modifier,args->plane_count,res->fd,args->plane_strides[0],args->plane_offsets[0],&gr->gb_android_image);
+       } else {
+       gr->egl_image = virgl_egl_image_from_dmabuf(egl,

@@ -1,0 +1,30 @@
+--- a/src/venus/vkr_library.c
++++ b/src/venus/vkr_library.c
+@@ -134,7 +134,17 @@
+    const char *env_path = getenv("ANDROID_EMU_VK_LOADER_PATH");
+    if (env_path && env_path[0]) {
+       lib->handle = dlopen(env_path, RTLD_NOW | RTLD_LOCAL);
+-      vkr_log("dlopen('%s') -> %p", env_path, lib->handle);
++      if (!lib->handle) {
++         /* An explicitly selected backend must not silently become a vendor
++          * loader with different memory-sharing capabilities. Retain dlerror
++          * before another loader call replaces it; never log VM arguments.
++          */
++         const char *error = dlerror();
++         vkr_log("GB-VENUS-LOADER: explicit_driver_load_failed error=%.384s",
++                 error ? error : "unavailable");
++         return false;
++      }
++      vkr_log("GB-VENUS-LOADER: explicit_driver_opened=true");
+    }
+ #ifdef __APPLE__
+    if (lib->handle == NULL)
+@@ -162,6 +172,8 @@
+       return false;
+    }
+ 
++   if (env_path && env_path[0])
++      vkr_log("GB-VENUS-LOADER: explicit_driver_entrypoint_ready=true");
+    vkr_cached_library = *lib;
+    return true;
+ }

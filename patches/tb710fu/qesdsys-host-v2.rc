@@ -1,0 +1,18 @@
+# Candidate integration; requires qesdsys-host-v2.cil, original signed stock APK,
+# original framework VINTF fragment, and the owner-built host.jar. No APK install.
+on property:sys.boot_completed=1 && property:ro.build.fingerprint=Dell/mica/mica:17/CL3B.260622.273.R1/16471258:user/release-keys && property:ro.vendor.build.fingerprint=Lenovo/TB710FU/TB710FU:16/BP2A.250605.031.A3/ZUI_17.5.04.059_260327_ROW:user/release-keys
+    start gb-qesdsys
+
+service gb-qesdsys /system_ext/bin/gb-qesdsys
+    class late_start
+    user system
+    group system
+    seclabel u:r:gb_qesdsys:s0
+    stdio_to_kmsg
+    disabled
+    oneshot
+
+# Owner diagnostic retry for this fixed service, preserving init/UID policy.
+on property:debug.gb.qesdsys=1 && property:sys.boot_completed=1 && property:ro.build.fingerprint=Dell/mica/mica:17/CL3B.260622.273.R1/16471258:user/release-keys && property:ro.vendor.build.fingerprint=Lenovo/TB710FU/TB710FU:16/BP2A.250605.031.A3/ZUI_17.5.04.059_260327_ROW:user/release-keys
+    setprop debug.gb.qesdsys 0
+    start gb-qesdsys

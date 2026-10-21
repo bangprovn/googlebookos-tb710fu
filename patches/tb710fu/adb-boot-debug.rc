@@ -1,0 +1,15 @@
+# Temporary, owner-requested USB diagnostics for the mica/TB710FU port.
+# Enable the normal authenticated production adbd; preserve ro.adb.secure=1,
+# ro.debuggable=0, host approval, SELinux and Lenovo's USB gadget implementation.
+# No TCP listener, root daemon, setup-provisioning flag or auth-key replacement.
+on property:ro.persistent_properties.ready=true && property:ro.adb.secure=1 && property:ro.debuggable=0
+    setprop persist.sys.usb.config adb
+
+# Queue a separate event after the stock boot actions, including Lenovo's
+# persist.vendor.usb.config selection. The existing configfs/HAL rules own UDC,
+# FunctionFS and adbd startup; do not hardcode a donor USB controller.
+on boot && property:ro.adb.secure=1 && property:ro.debuggable=0
+    trigger gb-adb-debug-boot
+
+on gb-adb-debug-boot && property:ro.adb.secure=1 && property:ro.debuggable=0
+    setprop sys.usb.config adb

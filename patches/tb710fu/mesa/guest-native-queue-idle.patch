@@ -1,0 +1,11 @@
+--- a/src/virtio/vulkan/vn_wsi.c
++++ b/src/virtio/vulkan/vn_wsi.c
+@@ -22,0 +23 @@
++#include "gb-native-queue-idle.h"
+@@ -304,0 +306,6 @@
++   const char *gb_idle_mode = getenv("GB_VENUS_NATIVE_QUEUE_WAIT_V1");
++   VkResult gb_idle_result = gb_native_queue_idle_v1(
++      _queue, gb_idle_mode, getenv("GB_VENUS_PRESENT_SYNC_V1"), vn_QueueWaitIdle);
++   if (gb_idle_result != VK_SUCCESS)
++      return vn_result(dev->instance, gb_idle_result);
++

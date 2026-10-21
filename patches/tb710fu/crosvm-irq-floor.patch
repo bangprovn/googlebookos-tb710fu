@@ -1,0 +1,13 @@
+--- a/aarch64/src/lib.rs
++++ b/aarch64/src/lib.rs
+@@ -524,7 +524,9 @@
+                     .expect("invalid platform mmio region"),
+             ),
+-            first_irq: AARCH64_IRQ_BASE,
++            // The Gunyah irqfd label namespace includes the fixed watchdog
++            // label 15. PCI level IRQs must not collide with that edge source.
++            first_irq: AARCH64_VMWDT_IRQ + 1,
+         }
+     }
+ 
+     fn build_vm<V, Vcpu>(

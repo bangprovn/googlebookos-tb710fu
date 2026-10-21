@@ -1,0 +1,3 @@
+; Read only the descriptor supplied by init; no device write, new capability,
+; permissive domain, kernel ring clearing or firmware/block-device access.
+(allow gb_boot_logger kmsg_device (chr_file (read getattr)))

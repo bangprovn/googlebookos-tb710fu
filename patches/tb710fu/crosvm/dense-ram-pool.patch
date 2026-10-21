@@ -1,0 +1,228 @@
+--- a/hypervisor/src/gunyah/mthp.rs
++++ b/hypervisor/src/gunyah/mthp.rs
+@@ -128,6 +128,18 @@
+ /// # Safety
+ /// `host_addr` must point to a valid memory mapping of at least `size` bytes.
+ pub unsafe fn prepare_lend_region(host_addr: *mut u8, size: u64) -> LendPrepResult {
++    prepare_lend_region_inner(host_addr, size, true)
++}
++
++/// Prepare the already-bound dense-pool window; the owner gate ran before
++/// population. All population/collapse/mlock checks are retained.
++/// # Safety
++/// The mapping must be live, writable and cover size bytes.
++pub unsafe fn prepare_reserved_region(host_addr: *mut u8, size: u64) -> LendPrepResult {
++    prepare_lend_region_inner(host_addr, size, false)
++}
++
++unsafe fn prepare_lend_region_inner(host_addr: *mut u8, size: u64, coordinate: bool) -> LendPrepResult {
+     info!(
+         "GH: preparing LEND region: hva={:#x} size={:#x} ({} MB)",
+         host_addr as u64,
+@@ -208,7 +220,7 @@
+         info!("GH: Phase 2: population complete");
+     }
+ 
+-    if let Err(e) = coordinate_owner(size, "before_pmd_and_pin") {
++    if let Err(e) = if coordinate { coordinate_owner(size, "before_pmd_and_pin") } else { Ok(()) } {
+         warn!("GH-PREPIN2: refused before pin/share: {}", e);
+         return LendPrepResult {
+             need_small: vec![true; (size / THP_SIZE) as usize],
+@@ -217,7 +229,7 @@
+             mlocked: false,
+         };
+     }
+-    if std::env::var_os("DROIDVM_PREPIN_PIPE_FD").is_some() {
++    if coordinate && std::env::var_os("DROIDVM_PREPIN_PIPE_FD").is_some() {
+         info!("GH-PREPIN2: matching release received; continuing preparation");
+     }
+ 
+--- a/hypervisor/src/gunyah/mod.rs
++++ b/hypervisor/src/gunyah/mod.rs
+@@ -10,6 +10,7 @@
+ mod mthp;
+ pub mod shim_abi;
+ mod pin;
++mod ram_pool;
+ mod runtime_parcel_plan;
+ use std::cmp::Reverse;
+ use std::collections::BTreeMap;
+@@ -696,26 +697,34 @@
+                 #[cfg(any(target_arch = "arm", target_arch = "aarch64"))]
+                 if region.options.purpose == MemoryRegionPurpose::SharedGuestRam {
+                     if std::env::var_os("DROIDVM_PREPIN_PIPE_FD").is_some() {
+-                        // Native2GiB diagnostic only. Fault RAM under the kernel's
+-                        // FOLL_LONGTERM/PF_MEMALLOC_PIN context instead of first
+-                        // filling movable shmem and then migrating it out of CMA.
+-                        // No reserve, ioctl, policy or firmware limit is changed.
+                         if full_size != (2042u64 << 20) {
+                             return Err(Error::new(libc::EINVAL));
+                         }
+-                        // SAFETY: this live guest mapping covers full_size bytes.
+-                        if unsafe { libc::madvise(region.host_addr as *mut libc::c_void,
+-                            full_size as usize, libc::MADV_HUGEPAGE) } != 0 {
+-                            return Err(Error::last());
+-                        }
+-                        mthp::coordinate_owner(full_size, "before_population_and_pin")
++                        let stats = ram_pool::control(vm_descriptor.as_raw_descriptor(), full_size, false)
++                            .map_err(|e| Error::new(e.raw_os_error().unwrap_or(libc::EINVAL)))?;
++                        base::info!("GH-RAM-POOL: bound available_2m={} served_2m={} held_2m={}",
++                            stats.available_2m, stats.served_2m, stats.held_2m);
++                        mthp::coordinate_owner(full_size, "before_pool_population")
+                             .map_err(|e| Error::new(e.raw_os_error().unwrap_or(libc::EINVAL)))?;
+                         base::info!("GH-PREPIN2: matching release received; continuing preparation");
+-                        base::info!("GH-EARLY-PIN: faulting fresh RAM under required long-term pin; no prior population/collapse");
++                        // SAFETY: this live RW guest mapping covers full_size bytes.
++                        let prep = unsafe {
++                            mthp::prepare_reserved_region(region.host_addr as *mut u8, full_size)
++                        };
++                        if !prep.populated || !prep.mlocked {
++                            return Err(Error::new(libc::ENOMEM));
++                        }
+                         guest_ram_pin = Some(pin::LongtermPin::pin_required(
+                             region.host_addr as u64, full_size, pin::PinSite::PreBoot,
+                         )?);
+-                        base::info!("GH-EARLY-PIN: whole window held; no compound-backing claim");
++                        let stats = ram_pool::control(vm_descriptor.as_raw_descriptor(), full_size, true)
++                            .map_err(|e| Error::new(e.raw_os_error().unwrap_or(libc::EINVAL)))?;
++                        base::info!("GH-RAM-POOL: pinned available_2m={} served_2m={} held_2m={}",
++                            stats.available_2m, stats.served_2m, stats.held_2m);
++                        if stats.served_2m < (full_size >> 21) as u32 {
++                            base::error!("GH-RAM-POOL: incomplete dense supply; refusing before VM start/share");
++                            return Err(Error::new(libc::ENOSPC));
++                        }
+                     } else {
+                         // SAFETY: host_addr is a valid mapping of region.size bytes.
+                         let prep = unsafe {
+--- /dev/null
++++ b/hypervisor/src/gunyah/ram_pool.rs
+@@ -0,0 +1,129 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++//! Explicit optional in-tree RAM supply. This is not a stock Gunyah ioctl.
++use std::fs::File;
++use std::io;
++use std::os::unix::io::AsRawFd;
++
++const WINDOW_BYTES: u64 = 2042 << 20;
++const MAX_PAGES: u32 = 1024; // pool2GiB maximum, units of2MiB
++const CONTROL: libc::c_ulong = 0xc0204717;
++
++#[repr(C)]
++#[derive(Clone, Copy, Default)]
++struct Request {
++    vm_fd: i32,
++    flags: u32,
++    memory_size: u64,
++    available_2m: u32,
++    served_2m: u32,
++    held_2m: u32,
++    reserved: u32,
++}
++const _: [(); 32] = [(); std::mem::size_of::<Request>()];
++
++#[derive(Debug)]
++pub struct Stats {
++    pub available_2m: u32,
++    pub served_2m: u32,
++    pub held_2m: u32,
++}
++
++fn invalid() -> io::Error {
++    io::Error::new(io::ErrorKind::InvalidData, "invalid RAM-pool receipt")
++}
++
++fn receipt(r: &Request, fd: i32, query: bool) -> io::Result<Stats> {
++    if r.vm_fd != fd
++        || r.flags != u32::from(query)
++        || r.memory_size != WINDOW_BYTES
++        || r.reserved != 0
++        || r.held_2m > MAX_PAGES
++        || r.available_2m > r.held_2m
++        || r.served_2m > r.held_2m
++        || r.available_2m + r.served_2m > r.held_2m
++        || (!query && r.available_2m < (WINDOW_BYTES >> 21) as u32)
++    {
++        return Err(invalid());
++    }
++    Ok(Stats {
++        available_2m: r.available_2m,
++        served_2m: r.served_2m,
++        held_2m: r.held_2m,
++    })
++}
++
++pub fn control(vm_fd: i32, bytes: u64, query: bool) -> io::Result<Stats> {
++    if vm_fd < 0 || bytes != WINDOW_BYTES {
++        return Err(io::Error::new(
++            io::ErrorKind::InvalidInput,
++            "RAM-pool scope",
++        ));
++    }
++    let file = File::open("/dev/gunyah_share")?;
++    let mut r = Request {
++        vm_fd,
++        memory_size: bytes,
++        flags: u32::from(query),
++        ..Request::default()
++    };
++    // SAFETY: r is the exact32byte in/out ABI; file is an owned live fd.
++    let ret = unsafe { libc::ioctl(file.as_raw_fd(), CONTROL as _, &mut r) };
++    if ret < 0 {
++        return Err(io::Error::last_os_error());
++    }
++    if ret != 0 {
++        return Err(invalid());
++    }
++    receipt(&r, vm_fd, query)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn rejects_mutated_inputs_and_impossible_pool_counts() {
++        let valid = Request {
++            vm_fd: 11,
++            memory_size: WINDOW_BYTES,
++            available_2m: 1024,
++            held_2m: 1024,
++            ..Request::default()
++        };
++        assert!(receipt(&valid, 11, false).is_ok());
++        for field in 0..8 {
++            let mut bad = valid;
++            match field {
++                0 => bad.vm_fd = 12,
++                1 => bad.flags = 1,
++                2 => bad.memory_size -= 4096,
++                3 => bad.reserved = 1,
++                4 => bad.held_2m = MAX_PAGES + 1,
++                5 => bad.available_2m = 1020,
++                6 => bad.served_2m = 1,
++                _ => bad.available_2m = u32::MAX,
++            }
++            assert!(receipt(&bad, 11, false).is_err());
++        }
++        let query = Request {
++            flags: 1,
++            available_2m: 3,
++            served_2m: 1021,
++            ..valid
++        };
++        let s = receipt(&query, 11, true).unwrap();
++        assert_eq!((s.available_2m, s.served_2m, s.held_2m), (3, 1021, 1024));
++    }
++
++    #[test]
++    fn bad_scope_never_opens_a_device() {
++        assert_eq!(
++            control(-1, WINDOW_BYTES, false).unwrap_err().kind(),
++            io::ErrorKind::InvalidInput
++        );
++        assert_eq!(
++            control(11, WINDOW_BYTES - 4096, false).unwrap_err().kind(),
++            io::ErrorKind::InvalidInput
++        );
++    }
++}

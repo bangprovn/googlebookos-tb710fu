@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "device": "TB710FU",
+  "scope": "Native Android headless-system-user boot strategy; device runtime configuration, not a firmware image overlay",
+  "system_fingerprint": "Dell/mica/mica:17/CL3B.260622.273.R1/16471258:user/release-keys",
+  "vendor_fingerprint": "Lenovo/TB710FU/TB710FU:16/BP2A.250605.031.A3/ZUI_17.5.04.059_260327_ROW:user/release-keys",
+  "implementation": "crates/gb-tools/examples/owner_boot_strategy.rs",
+  "install_action": "use-previous-user",
+  "check_action": "inspect",
+  "remove_action": "restore-donor",
+  "property": "persist.user.hsum_boot_strategy",
+  "value": 0,
+  "conditions": [
+    "Pinned physical USB identity, ADB serial, Android boot and observed system/vendor fingerprints",
+    "Android boot complete and SELinux Enforcing",
+    "Headless mode true and config_hsumBootStrategy resource equals 1",
+    "No explicit owner override: existing property is empty or -1",
+    "Framework strategy agrees with the property/resource",
+    "Mutation requires normally unlocked foreground owner and an empty VM registry"
+  ],
+  "effects": [
+    "Request Android's native previous-or-first-switchable-user algorithm at boot",
+    "Keep normal keyguard, credential policy, headless-system-user mode and firmware unchanged"
+  ],
+  "reversal": "With the qualified target and quiescent normally unlocked owner, restore-donor sets -1, the native resource-default sentinel. It does not delete the persistent property or select a specific user.",
+  "limitations": [
+    "The example validates caller-pinned fingerprints; this JSON is a versioned recipe, not an automatically executed build stage",
+    "A mutation receipt alone does not prove reboot behavior; runtime reboot evidence is separate",
+    "One native owner-selection reboot is qualified; new owners, factory reset and updated donor builds require requalification"
+  ],
+  "runtime_report": "docs/tb710fu-owner-boot-20261020.json"
+}

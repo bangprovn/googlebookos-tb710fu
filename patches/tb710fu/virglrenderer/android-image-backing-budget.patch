@@ -1,0 +1,114 @@
+--- a/src/gb_android_image_bridge.h
++++ b/src/gb_android_image_bridge.h
+@@ -11,0 +12 @@
++#include <pthread.h>
+@@ -29 +30,2 @@
+-#define GB_IMAGE_SLOTS 8u
++#define GB_IMAGE_SLOTS 16u
++#define GB_IMAGE_BACKING_LIMIT (512ull * 1024ull * 1024ull)
+@@ -31,0 +34,45 @@
++
++/* Pair slot and backing admission. No driver, FD, logging or destructor call
++ * is made while this short accounting lock is held. Unknown AHB storage is
++ * provisionally charged at its existing per-image maximum before allocation.
++ * This bounds accounted backing, not driver/object overhead or an oversized
++ * rejected AHB's transient allocation, whose size is learned after allocation.
++ */
++static pthread_mutex_t gb_image_budget_lock=PTHREAD_MUTEX_INITIALIZER;
++static uint64_t gb_image_backing_bytes;
++enum gb_image_budget_result { GB_IMAGE_BUDGET_OK, GB_IMAGE_BUDGET_SLOTS, GB_IMAGE_BUDGET_BYTES };
++static enum gb_image_budget_result gb_image_budget_acquire(uint64_t bytes)
++{
++   enum gb_image_budget_result result=GB_IMAGE_BUDGET_OK;
++   pthread_mutex_lock(&gb_image_budget_lock);
++   if (atomic_load(&gb_image_slots)>=GB_IMAGE_SLOTS) result=GB_IMAGE_BUDGET_SLOTS;
++   else if (!bytes || bytes>GB_IMAGE_BACKING_LIMIT-gb_image_backing_bytes) result=GB_IMAGE_BUDGET_BYTES;
++   else {atomic_fetch_add(&gb_image_slots,1);gb_image_backing_bytes+=bytes;}
++   pthread_mutex_unlock(&gb_image_budget_lock);
++   return result;
++}
++static bool gb_image_budget_shrink(uint64_t old_bytes,uint64_t new_bytes)
++{
++   bool valid;
++   pthread_mutex_lock(&gb_image_budget_lock);
++   valid=new_bytes && new_bytes<=old_bytes && old_bytes<=gb_image_backing_bytes;
++   if (valid) gb_image_backing_bytes-=old_bytes-new_bytes;
++   pthread_mutex_unlock(&gb_image_budget_lock);
++   return valid;
++}
++static bool gb_image_budget_release(uint64_t bytes)
++{
++   bool valid;
++   pthread_mutex_lock(&gb_image_budget_lock);
++   valid=bytes && bytes<=gb_image_backing_bytes && atomic_load(&gb_image_slots)>0;
++   if (valid) {gb_image_backing_bytes-=bytes;atomic_fetch_sub(&gb_image_slots,1);}
++   pthread_mutex_unlock(&gb_image_budget_lock);
++   return valid;
++}
++static void gb_image_budget_snapshot(unsigned *slots,uint64_t *bytes)
++{
++   pthread_mutex_lock(&gb_image_budget_lock);
++   *slots=atomic_load(&gb_image_slots);*bytes=gb_image_backing_bytes;
++   pthread_mutex_unlock(&gb_image_budget_lock);
++}
++
+@@ -41 +88 @@
+-   atomic_uint active, pending, quarantined, allocated, created, freed, slot_refused;
++   atomic_uint active, pending, quarantined, allocated, created, freed, slot_refused, backing_refused;
+@@ -50,2 +97,2 @@
+-static void gb_image_diag_failure(const char *event,const char *stage,int result,
+-   bool vk_result_valid,uint32_t width,uint32_t height)
++static void gb_image_diag_failure_budget(const char *event,const char *stage,int result,
++   bool vk_result_valid,uint32_t width,uint32_t height,uint64_t requested_backing_bytes)
+@@ -57 +104,2 @@
+-   vrend_printf("GB-ANDROID-IMAGE-STATE:{\"schema_version\":1,\"event\":\"%s\",\"stage\":\"%s\",\"result\":%d,\"vk_result_valid\":%s,\"width\":%u,\"height\":%u,\"charged\":%u,\"active\":%u,\"pending\":%u,\"quarantined\":%u,\"allocated\":%u,\"created\":%u,\"freed\":%u,\"slot_refused\":%u,\"create_failed\":%u,\"refresh_ok\":%u,\"refresh_failed\":%u,\"refresh_skipped\":%u,\"snapshot_transactional\":false}\n",
++   unsigned slots;uint64_t backing_bytes;gb_image_budget_snapshot(&slots,&backing_bytes);
++   vrend_printf("GB-ANDROID-IMAGE-STATE:{\"schema_version\":1,\"event\":\"%s\",\"stage\":\"%s\",\"result\":%d,\"vk_result_valid\":%s,\"width\":%u,\"height\":%u,\"charged\":%u,\"backing_bytes\":%" PRIu64 ",\"backing_limit_bytes\":%" PRIu64 ",\"requested_backing_bytes\":%" PRIu64 ",\"active\":%u,\"pending\":%u,\"quarantined\":%u,\"allocated\":%u,\"created\":%u,\"freed\":%u,\"slot_refused\":%u,\"backing_refused\":%u,\"create_failed\":%u,\"refresh_ok\":%u,\"refresh_failed\":%u,\"refresh_skipped\":%u,\"snapshot_transactional\":false}\n",
+@@ -59 +107 @@
+-      atomic_load(&gb_image_slots),atomic_load(&gb_image_diag.active),atomic_load(&gb_image_diag.pending),
++      slots,backing_bytes,(uint64_t)GB_IMAGE_BACKING_LIMIT,requested_backing_bytes,atomic_load(&gb_image_diag.active),atomic_load(&gb_image_diag.pending),
+@@ -61 +109 @@
+-      atomic_load(&gb_image_diag.slot_refused),atomic_load(&gb_image_diag.create_failed),atomic_load(&gb_image_diag.refresh_ok),
++      atomic_load(&gb_image_diag.slot_refused),atomic_load(&gb_image_diag.backing_refused),atomic_load(&gb_image_diag.create_failed),atomic_load(&gb_image_diag.refresh_ok),
+@@ -62,0 +111,6 @@
++}
++
++static void gb_image_diag_failure(const char *event,const char *stage,int result,
++   bool vk_result_valid,uint32_t width,uint32_t height)
++{
++   gb_image_diag_failure_budget(event,stage,result,vk_result_valid,width,height,0);
+@@ -152,0 +207 @@
++   uint64_t backing_charge; /* Remains owned through all cleanup or quarantine. */
+@@ -230,0 +286 @@
++   uint64_t backing_charge=g->backing_charge;
+@@ -232 +288,2 @@
+-   atomic_fetch_sub(&gb_image_slots,1);
++   if (!gb_image_budget_release(backing_charge))
++      gb_image_diag_failure_budget("accounting_failure","release",EIO,false,0,0,backing_charge);
+@@ -268,3 +325,10 @@
+-   unsigned slots=atomic_load(&gb_image_slots);
+-   do { if (slots>=GB_IMAGE_SLOTS) { gb_image_diag_increment(&gb_image_diag.slot_refused);gb_image_diag_failure("slot_refused","slot_budget",ENOMEM,false,w,h);gb_image_log("slot_budget",ENOMEM,w,h); return NULL; } }
+-   while (!atomic_compare_exchange_weak(&gb_image_slots,&slots,slots+1));
++   /* Charge the complete imported FD, not the potentially smaller source
++    * image requirements. AHB allocation size is unknown until after allocate. */
++   uint64_t reservation=(uint64_t)bytes+GB_IMAGE_LIMIT;
++   enum gb_image_budget_result admitted=gb_image_budget_acquire(reservation);
++   if (admitted!=GB_IMAGE_BUDGET_OK) {
++      bool slots=admitted==GB_IMAGE_BUDGET_SLOTS;
++      gb_image_diag_increment(slots?&gb_image_diag.slot_refused:&gb_image_diag.backing_refused);
++      gb_image_diag_failure_budget(slots?"slot_refused":"backing_refused",slots?"slot_budget":"backing_budget",ENOMEM,false,w,h,reservation);
++      gb_image_log(slots?"slot_budget":"backing_budget",ENOMEM,w,h);return NULL;
++   }
+@@ -272,2 +336,6 @@
+-   if (!g) { atomic_fetch_sub(&gb_image_slots,1); return NULL; }
+-   g->width=w;g->height=h;g->import_fd=-1;g->sync_fd=-1;
++   if (!g) {
++      gb_image_budget_release(reservation);
++      gb_image_diag_increment(&gb_image_diag.create_failed);
++      gb_image_diag_failure_budget("create_failed","calloc",ENOMEM,false,w,h,reservation);return NULL;
++   }
++   g->width=w;g->height=h;g->import_fd=-1;g->sync_fd=-1;g->backing_charge=reservation;
+@@ -359,0 +428,3 @@
++   uint64_t actual_charge=(uint64_t)bytes+ap.allocationSize;
++   if (!gb_image_budget_shrink(g->backing_charge,actual_charge)) goto fail;
++   g->backing_charge=actual_charge;

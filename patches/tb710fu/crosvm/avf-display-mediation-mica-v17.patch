@@ -1,0 +1,129 @@
+# Pinned mica16471258 private display mediation, not a generic Android17 AIDL adapter.
+# Base Droid-VM/Virtualization: 862c6af544ce4ca89e5dc8f1aca10a832367d77f
+# Copy the paired avf-display-mica-v17.h and avf-display-mica-v17/aidl tree before building.
+diff --git a/libs/android_display_backend/Android.bp b/libs/android_display_backend/Android.bp
+index 6f810ca..d22a920 100644
+--- a/libs/android_display_backend/Android.bp
++++ b/libs/android_display_backend/Android.bp
+@@ -36,6 +36,22 @@ aidl_interface {
+     },
+ }
+ 
++aidl_interface {
++    name: "libgb_avf_display_mica_v17",
++    srcs: ["avf_mica_v17/aidl/android/system/virtualizationservice_internal/IVirtualizationServiceInternal.aidl"],
++    local_include_dir: "avf_mica_v17/aidl",
++    unstable: true,
++    backend: {
++        java: { enabled: false },
++        cpp: { enabled: false },
++        rust: { enabled: false },
++        ndk: {
++            enabled: true,
++            apex_available: ["//apex_available:platform", "com.android.virt"],
++        },
++    },
++}
++
+ cc_library_static {
+     name: "libcrosvm_android_display_client",
+     srcs: [
+@@ -47,6 +63,7 @@ cc_library_static {
+     ],
+     whole_static_libs: [
+         "libcrosvm_android_display_service-ndk",
++        "libgb_avf_display_mica_v17-ndk",
+     ],
+     static_libs: [
+         "libbase",
+diff --git a/libs/android_display_backend/crosvm_android_display_client.cpp b/libs/android_display_backend/crosvm_android_display_client.cpp
+index dad64a5..a26e100 100644
+--- a/libs/android_display_backend/crosvm_android_display_client.cpp
++++ b/libs/android_display_backend/crosvm_android_display_client.cpp
+@@ -16,6 +16,8 @@
+ 
+ #include <aidl/android/crosvm/BnCrosvmAndroidDisplayService.h>
+ #include <aidl/android/crosvm/DisplayConfig.h>
++#include <aidl/android/system/virtualizationservice_internal/IVirtualizationServiceInternal.h>
++#include "avf-display-mica-v17.h"
+ #include <android-base/logging.h>
+ #include <android-base/result.h>
+ #include <android-base/scopeguard.h>
+@@ -56,6 +58,7 @@
+ #include "surface_control_dl.h"
+ 
+ using aidl::android::crosvm::BnCrosvmAndroidDisplayService;
++using aidl::android::system::virtualizationservice_internal::IVirtualizationServiceInternal;
+ using aidl::android::view::Surface;
+ 
+ using android::base::Error;
+@@ -2911,6 +2914,7 @@ struct AndroidDisplayContext {
+     };
+ 
+     std::shared_ptr<DisplayService> disp_service;
++    std::shared_ptr<IVirtualizationServiceInternal> gb_virt_service;
+     ErrorCallback error_callback;
+     DisplayPath display_path = DisplayPath::kUnknown;
+     std::unique_ptr<VulkanDisplayBridge> vulkan_display;
+@@ -2924,23 +2928,53 @@ struct AndroidDisplayContext {
+         }
+         auto disp_service = ::ndk::SharedRefBase::make<DisplayService>();
+ 
+-        // Register the DisplayService directly to the service manager under `service_name`
+-        // (passed from crosvm's --android-display-service argument). This works because crosvm
+-        // here is launched in a privileged (root) context with SELinux permissive, so it is
+-        // allowed to register a service. The app side looks the service up by the same name.
+-        //
+-        // The binder thread pool MUST be started before addService so that incoming calls
+-        // (e.g. setSurface) from the app are serviced.
++        const auto registration = gbAvfDisplayMode(getenv("GB_AVF_DISPLAY_SERVICE"));
++        if (registration == GbAvfDisplayMode::Invalid) {
++            errorf("gb-avf-display: invalid_registration_mode");
++            return;
++        }
+         ABinderProcess_setThreadPoolMaxThreadCount(4);
+         ABinderProcess_startThreadPool();
+ 
++        if (registration == GbAvfDisplayMode::MicaV17) {
++            const auto cid = gbAvfDisplayCid(service_name == nullptr ? "" : service_name);
++            if (!cid) {
++                errorf("gb-avf-display: invalid_vm_cid");
++                return;
++            }
++            auto remote = ndk::SpAIBinder(
++                    AServiceManager_checkService("android.system.virtualizationservice"));
++            if (remote.get() == nullptr) {
++                errorf("gb-avf-display: mediator_unavailable");
++                return;
++            }
++            auto mediator = IVirtualizationServiceInternal::fromBinder(remote);
++            if (mediator == nullptr) {
++                errorf("gb-avf-display: mediator_unavailable");
++                return;
++            }
++            auto status = mediator->setDisplayService(*cid, disp_service->asBinder());
++            if (!status.isOk()) {
++                errorf("gb-avf-display: registration_failed exception=%d service=%d status=%d",
++                       status.getExceptionCode(), status.getServiceSpecificError(), status.getStatus());
++                return;
++            }
++            gb_virt_service = mediator;
++            this->disp_service = disp_service;
++            LOG(INFO) << "gb-avf-display: mediated_registration_succeeded cid=" << *cid;
++            // The pinned donor has per-CID lookup at transaction17, not AOSP's clear method.
++            // Do not send an unverified cleanup transaction. VM/process lifetime owns the binder.
++            return;
++        }
++
++        // Preserve the fork's explicit legacy transport for its external root integration.
++        // A mediated failure never falls back to global service registration.
+         binder_status_t status =
+                 AServiceManager_addService(disp_service->asBinder().get(), service_name);
+         if (status != STATUS_OK) {
+             errorf("Failed to register '%s' to service manager: status=%d", service_name, status);
+             return;
+         }
+-
+         this->disp_service = disp_service;
+     }
+ 

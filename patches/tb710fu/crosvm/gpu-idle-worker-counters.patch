@@ -1,0 +1,271 @@
+--- a/devices/src/virtio/gpu/mod.rs
++++ b/devices/src/virtio/gpu/mod.rs
+@@ -1127,6 +1127,145 @@
+     DisplayDescriptorRequest,
+ }
+ 
++/* GB_GPU_IDLE_COUNTERS_BEGIN
++ * Process-opt-in event-loop observations only: no scheduling/fence policy.
++ * Fixed records and scalar fields; elapsed durations are wall time, not CPU time.
++ */
++static GB_GPU_IDLE_RECORDS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
++const GB_GPU_IDLE_MAX_RECORDS: u32 = 16;
++const GB_GPU_IDLE_INTERVAL_NS: u64 = 5_000_000_000;
++
++struct GpuIdleCounters {
++    started: std::time::Instant,
++    last_record_ns: u64,
++    waits: u64,
++    empty_waits: u64,
++    quick_waits: u64,
++    wait_ns: u64,
++    work_ns: u64,
++    readable: [u64; 10],
++    ctrl_progress_batches: u64,
++    cursor_progress_batches: u64,
++    flip_pending_peak: u64,
++    flip_retired: u64,
++}
++
++impl GpuIdleCounters {
++    fn new(selection: Option<&str>) -> Option<Self> {
++        if selection != Some("worker-counters-v1")
++            || GB_GPU_IDLE_RECORDS.load(Ordering::Relaxed) >= GB_GPU_IDLE_MAX_RECORDS
++        {
++            return None;
++        }
++        Some(Self {
++            started: std::time::Instant::now(),
++            last_record_ns: 0,
++            waits: 0,
++            empty_waits: 0,
++            quick_waits: 0,
++            wait_ns: 0,
++            work_ns: 0,
++            readable: [0; 10],
++            ctrl_progress_batches: 0,
++            cursor_progress_batches: 0,
++            flip_pending_peak: 0,
++            flip_retired: 0,
++        })
++    }
++
++    fn nanos(duration: Duration) -> u64 {
++        duration.as_nanos().min(u64::MAX as u128) as u64
++    }
++
++    fn wait_completed(&mut self, duration: Duration, empty: bool) {
++        let ns = Self::nanos(duration);
++        self.waits = self.waits.saturating_add(1);
++        self.empty_waits = self.empty_waits.saturating_add(u64::from(empty));
++        self.quick_waits = self.quick_waits.saturating_add(u64::from(ns <= 100_000));
++        self.wait_ns = self.wait_ns.saturating_add(ns);
++    }
++
++    fn readable_event(&mut self, token: WorkerToken) {
++        let index = match token {
++            WorkerToken::CtrlQueue => 0,
++            WorkerToken::CursorQueue => 1,
++            WorkerToken::Display => 2,
++            WorkerToken::GpuControl => 3,
++            WorkerToken::ResourceBridge { .. } => 4,
++            WorkerToken::VirtioGpuPoll => 5,
++            WorkerToken::FlipFence => 6,
++            WorkerToken::Sleep => 7,
++            WorkerToken::Kill => 8,
++            #[cfg(windows)]
++            WorkerToken::DisplayDescriptorRequest => 9,
++        };
++        self.readable[index] = self.readable[index].saturating_add(1);
++    }
++
++    fn queue_progress(&mut self, cursor: bool) {
++        let value = if cursor {
++            &mut self.cursor_progress_batches
++        } else {
++            &mut self.ctrl_progress_batches
++        };
++        *value = value.saturating_add(1);
++    }
++
++    fn flip_sweep(&mut self, before: usize, after: usize) {
++        self.flip_pending_peak = self.flip_pending_peak.max(before as u64);
++        self.flip_retired = self.flip_retired.saturating_add(before.saturating_sub(after) as u64);
++    }
++
++    fn record(&mut self, elapsed: Duration, work: Duration, final_record: bool) -> Option<String> {
++        self.work_ns = self.work_ns.saturating_add(Self::nanos(work));
++        let elapsed_ns = Self::nanos(elapsed);
++        if !final_record && elapsed_ns.saturating_sub(self.last_record_ns) < GB_GPU_IDLE_INTERVAL_NS {
++            return None;
++        }
++        // One process-wide budget, including worker recreation and concurrent devices.
++        let ordinal = GB_GPU_IDLE_RECORDS.fetch_update(
++            Ordering::Relaxed,
++            Ordering::Relaxed,
++            |count| (count < GB_GPU_IDLE_MAX_RECORDS).then(|| count + 1),
++        ).ok()?;
++        self.last_record_ns = elapsed_ns;
++        Some(format!(
++            "GB-GPU-IDLE-TRACE:{{\"schema_version\":1,\"scope\":\"worker_event_counters\",\"record\":{},\"final_record\":{},\"elapsed_ms\":{},\"waits\":{},\"empty_waits\":{},\"quick_waits_le_100us\":{},\"wait_ns\":{},\"work_ns\":{},\"readable_tokens\":{{\"ctrl_queue\":{},\"cursor_queue\":{},\"display\":{},\"gpu_control\":{},\"resource_bridge\":{},\"virtio_gpu_poll\":{},\"flip_fence\":{},\"sleep\":{},\"kill\":{},\"display_descriptor_request\":{}}},\"queue_progress_batches\":{{\"ctrl\":{},\"cursor\":{}}},\"flip_pending_peak\":{},\"flip_retired\":{},\"cpu_usage_measured\":false}}",
++            ordinal + 1, final_record, elapsed_ns / 1_000_000,
++            self.waits, self.empty_waits, self.quick_waits, self.wait_ns, self.work_ns,
++            self.readable[0], self.readable[1], self.readable[2], self.readable[3],
++            self.readable[4], self.readable[5], self.readable[6], self.readable[7],
++            self.readable[8], self.readable[9], self.ctrl_progress_batches,
++            self.cursor_progress_batches, self.flip_pending_peak, self.flip_retired,
++        ))
++    }
++}
++
++fn gpu_idle_checkpoint(
++    trace: &mut Option<GpuIdleCounters>,
++    work_started: Option<std::time::Instant>,
++    final_record: bool,
++) {
++    if trace.is_none() {
++        return;
++    }
++    if let (Some(trace), Some(work_started)) = (trace.as_mut(), work_started) {
++        let now = std::time::Instant::now();
++        if let Some(line) = trace.record(
++            now.saturating_duration_since(trace.started),
++            now.saturating_duration_since(work_started),
++            final_record,
++        ) {
++            info!("{}", line);
++        }
++    }
++    // Stop collecting after the shared cap, including clocks on later iterations.
++    if GB_GPU_IDLE_RECORDS.load(Ordering::Relaxed) >= GB_GPU_IDLE_MAX_RECORDS {
++        *trace = None;
++    }
++}
++/* GB_GPU_IDLE_COUNTERS_END */
++
+ struct EventManager<'a> {
+     pub wait_ctx: WaitContext<WorkerToken>,
+     events: Vec<(&'a dyn AsRawDescriptor, WorkerToken)>,
+@@ -1511,10 +1650,18 @@
+         // might be handled first instead of the other way around.  In practice, the cursor queue
+         // isn't used so this isn't a huge issue.
+ 
++        // GB_GPU_IDLE_HOOK_BEGIN
++        let mut gpu_idle_trace = GpuIdleCounters::new(
++            std::env::var("GB_GPU_IDLE_TRACE_V1").ok().as_deref(),
++        );
++        // GB_GPU_IDLE_HOOK_END
+         loop {
+             // A pending flip fence bounds the wait: its fd wakes us the moment the display is
+             // done, and the deadline turns a fence that never fires into a bounded hiccup
+             // instead of a frozen guest compositor.
++            // GB_GPU_IDLE_HOOK_BEGIN
++            let gpu_idle_wait_started = gpu_idle_trace.as_ref().map(|_| std::time::Instant::now());
++            // GB_GPU_IDLE_HOOK_END
+             let events = match self.state.next_flip_fence_deadline() {
+                 Some(deadline) => {
+                     let timeout = deadline
+@@ -1531,6 +1678,15 @@
+                     .context("failed polling for gpu worker events")?,
+             };
+ 
++            // GB_GPU_IDLE_HOOK_BEGIN
++            let gpu_idle_work_started = gpu_idle_wait_started.map(|started| {
++                let now = std::time::Instant::now();
++                if let Some(trace) = gpu_idle_trace.as_mut() {
++                    trace.wait_completed(now.saturating_duration_since(started), events.is_empty());
++                }
++                now
++            });
++            // GB_GPU_IDLE_HOOK_END
+             let mut signal_used_cursor = false;
+             let mut signal_used_ctrl = false;
+             let mut ctrl_available = false;
+@@ -1552,6 +1708,11 @@
+             }
+ 
+             for event in events.iter().filter(|e| e.is_readable) {
++                // GB_GPU_IDLE_HOOK_BEGIN
++                if let Some(trace) = gpu_idle_trace.as_mut() {
++                    trace.readable_event(event.token);
++                }
++                // GB_GPU_IDLE_HOOK_END
+                 match event.token {
+                     WorkerToken::CtrlQueue => {
+                         let _ = ctrl_evt.wait();
+@@ -1565,6 +1726,11 @@
+                             &activation_resources.mem,
+                             &activation_resources.cursor_queue,
+                         ) {
++                            // GB_GPU_IDLE_HOOK_BEGIN
++                            if let Some(trace) = gpu_idle_trace.as_mut() {
++                                trace.queue_progress(true);
++                            }
++                            // GB_GPU_IDLE_HOOK_END
+                             signal_used_cursor = true;
+                         }
+                     }
+@@ -1622,9 +1788,15 @@
+                         // itself is all this event needed to accomplish.
+                     }
+                     WorkerToken::Sleep => {
++                        // GB_GPU_IDLE_HOOK_BEGIN
++                        gpu_idle_checkpoint(&mut gpu_idle_trace, gpu_idle_work_started, true);
++                        // GB_GPU_IDLE_HOOK_END
+                         return Ok(WorkerStopReason::Sleep);
+                     }
+                     WorkerToken::Kill => {
++                        // GB_GPU_IDLE_HOOK_BEGIN
++                        gpu_idle_checkpoint(&mut gpu_idle_trace, gpu_idle_work_started, true);
++                        // GB_GPU_IDLE_HOOK_END
+                         return Ok(WorkerStopReason::Kill);
+                     }
+                 }
+@@ -1648,6 +1820,11 @@
+                     .state
+                     .process_queue(&activation_resources.mem, &activation_resources.ctrl_queue)
+             {
++                // GB_GPU_IDLE_HOOK_BEGIN
++                if let Some(trace) = gpu_idle_trace.as_mut() {
++                    trace.queue_progress(false);
++                }
++                // GB_GPU_IDLE_HOOK_END
+                 signal_used_ctrl = true;
+             }
+ 
+@@ -1663,6 +1840,13 @@
+             // Flip fences: register the ones queue processing just parked, then complete every
+             // one that signaled (or expired).  Runs every iteration -- the wait above was woken
+             // either by the fence fd itself or bounded by its deadline.
++            // GB_GPU_IDLE_HOOK_BEGIN
++            let gpu_idle_flip_before = if gpu_idle_trace.is_some() {
++                self.state.pending_flip_fences.len()
++            } else {
++                0
++            };
++            // GB_GPU_IDLE_HOOK_END
+             self.state.register_flip_fences(&event_manager.wait_ctx);
+             if self
+                 .state
+@@ -1671,6 +1855,11 @@
+                 signal_used_ctrl = true;
+             }
+ 
++            // GB_GPU_IDLE_HOOK_BEGIN
++            if let Some(trace) = gpu_idle_trace.as_mut() {
++                trace.flip_sweep(gpu_idle_flip_before, self.state.pending_flip_fences.len());
++            }
++            // GB_GPU_IDLE_HOOK_END
+             if signal_used_ctrl {
+                 activation_resources.ctrl_queue.signal_used();
+             }
+@@ -1682,6 +1871,9 @@
+             if needs_config_interrupt {
+                 activation_resources.interrupt.signal_config_changed();
+             }
++            // GB_GPU_IDLE_HOOK_BEGIN
++            gpu_idle_checkpoint(&mut gpu_idle_trace, gpu_idle_work_started, false);
++            // GB_GPU_IDLE_HOOK_END
+         }
+     }
+ }

@@ -1,0 +1,18 @@
+{
+  "status": "passed",
+  "source_patch_roundtrip": true,
+  "files": {
+    "drivers/virt/gunyah/gb-ram-pool.c": {
+      "before_sha256": "3a348c6cf89321aa5fb047446e10adb22b5215c412959d170dc8bc36e30bf1d9",
+      "after_sha256": "d4e7eba49e8d920e96995a393a32d40c08f04f7859c119d5aed87fcb793ed8f8"
+    },
+    "drivers/virt/gunyah/gb-pool-reclaim.h": {
+      "before_sha256": null,
+      "after_sha256": "034da49f72198160f10446aa75a62cbd10128a3a02447bad80dbc7311c207ebb"
+    }
+  },
+  "kernel_types_native": true,
+  "vendor_core_unchanged": true,
+  "no_private_symbols_or_probes": true,
+  "no_new_exports": true
+}

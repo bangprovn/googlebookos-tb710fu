@@ -1,0 +1,2 @@
+# Unified diff context whitespace is part of the checksum-pinned upstream patch.
+*.patch -whitespace

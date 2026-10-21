@@ -1,0 +1,91 @@
+--- a/src/virtio/vulkan/vn_wsi.c
++++ b/src/virtio/vulkan/vn_wsi.c
+@@ -18,6 +18,11 @@
+ #include "vn_instance.h"
+ #include "vn_physical_device.h"
+ #include "vn_queue.h"
++#include "vn_renderer.h"
++#include "gb-wsi-acquire-fd.h"
++#include "drm-uapi/dma-buf.h"
++#include <fcntl.h>
++#include <sys/ioctl.h>
+ 
+ /* The common WSI support makes some assumptions about the driver.
+  *
+@@ -313,6 +318,57 @@
+    return vn_result(dev->instance, result);
+ }
+ 
++/* Opt-in compatibility backport of upstream 849e3552/211c2172. The older
++ * common WSI exposes VkImage rather than VkDeviceMemory. Prime/copy images keep
++ * the existing path; native images must supply a real compositor release fence.
++ */
++static int
++gb_wsi_dup_cloexec(int fd)
++{
++   return fcntl(fd, F_DUPFD_CLOEXEC, 3);
++}
++
++static VkResult
++gb_wsi_acquire_compositor_fence(struct vn_device *dev,
++                               const VkAcquireNextImageInfoKHR *acquire,
++                               uint32_t index, bool *handled)
++{
++   *handled = false;
++   struct vn_image *image = vn_image_from_handle(
++      wsi_common_get_image(acquire->swapchain, index));
++   if (image->wsi.is_prime_blit_src)
++      return VK_SUCCESS;
++   if (!image->wsi.memory || !image->wsi.memory->base_bo)
++      return VK_ERROR_INVALID_EXTERNAL_HANDLE;
++   int dma_fd = vn_renderer_bo_export_dma_buf(dev->renderer,
++                                             image->wsi.memory->base_bo);
++   if (dma_fd < 0)
++      return VK_ERROR_INVALID_EXTERNAL_HANDLE;
++   struct dma_buf_export_sync_file export = {.flags = DMA_BUF_SYNC_RW, .fd = -1};
++   int ret;
++   do {
++      ret = ioctl(dma_fd, DMA_BUF_IOCTL_EXPORT_SYNC_FILE, &export);
++   } while (ret < 0 && errno == EINTR);
++   close(dma_fd);
++   if (ret < 0 || export.fd < 0) {
++      if (export.fd >= 0) close(export.fd);
++      return VK_ERROR_INVALID_EXTERNAL_HANDLE;
++   }
++   if (fcntl(export.fd, F_SETFD, FD_CLOEXEC) < 0) {
++      close(export.fd);
++      return VK_ERROR_OUT_OF_HOST_MEMORY;
++   }
++   VkResult result = gb_wsi_import_acquire_fd(vn_device_to_handle(dev), acquire,
++      export.fd, gb_wsi_dup_cloexec, vn_ImportSemaphoreFdKHR, vn_ImportFenceFdKHR);
++   if (result == VK_SUCCESS) {
++      *handled = true;
++      static atomic_uint reports;
++      if (VN_DEBUG(WSI) && atomic_fetch_add_explicit(&reports, 1, memory_order_relaxed) < 4)
++         vn_log(dev->instance, "GB-WSI-ACQUIRE: compositor syncfd imported");
++   }
++   return result;
++}
++
+ VkResult
+ vn_AcquireNextImage2KHR(VkDevice device,
+                         const VkAcquireNextImageInfoKHR *pAcquireInfo,
+@@ -330,6 +386,18 @@
+              vk_Result_to_str(result));
+    }
+ 
++   const char *acquire_mode = getenv("GB_VENUS_ACQUIRE_FENCE_V1");
++   if (acquire_mode && !strcmp(acquire_mode, "syncfd") &&
++       (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR)) {
++      bool handled;
++      VkResult imported = gb_wsi_acquire_compositor_fence(dev, pAcquireInfo,
++                                                       *pImageIndex, &handled);
++      if (imported != VK_SUCCESS)
++         return vn_error(dev->instance, imported);
++      if (handled)
++         return vn_result(dev->instance, result);
++   }
++
+    /* XXX this relies on implicit sync */
+    if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) {
+       struct vn_semaphore *sem =

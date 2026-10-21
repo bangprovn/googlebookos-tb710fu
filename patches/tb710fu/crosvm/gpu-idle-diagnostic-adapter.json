@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "revision": 2,
+  "state": "artifact_only_built_matched_uninstalled",
+  "scope": "Explicit diagnostic adapter variant setting native counters only for the existing privateVenus original default profile; no CPU/scheduling/policy repair",
+  "file": "crosvm_runtime_adapter.rs",
+  "base_path": "crates/gb-boot-logger/examples/crosvm_runtime_adapter.rs",
+  "base_sha256": "67d0805fbd20fc0be1758a7d22280239f973b9eee0cbf5f15768402043029617",
+  "result_sha256": "ad13fe9cee39aa312008b74ca4842b49c656a1dba115e4129b74cdad1c56d75a",
+  "patch_sha256": "e58432a5b7f3ccca9fe1e72aa151c845c2f650a54c0b681c183ff1f0d08d0b7f",
+  "exact_native_token": {
+    "GB_GPU_IDLE_TRACE_V1": "worker-counters-v1"
+  },
+  "profile_gate": {
+    "private_venus": true,
+    "name": "crosvm_debian"
+  },
+  "inherited_trace_removed_for_all_profiles": true,
+  "guest_environment_can_enable_native": false,
+  "paired_counter_patch": "patches/tb710fu/crosvm/gpu-idle-worker-counters.patch",
+  "required_pairing": "Use this exact diagnostic OUTER runtime adapter with the separately pinned traced native ELF and reviewed inventory/worker. The distinct legacy fallback/crosvm adapter must remain unchanged. No installation or worker/inventory update is performed by this artifact-only candidate.",
+  "original_adapter_source_modified": false,
+  "installed_adapter_modified": false,
+  "worker_inventory_modified": false,
+  "firmware_written": false,
+  "device_contacted": false,
+  "native_build_verified": true,
+  "adapter_build_verified": true,
+  "runtime_verified": false,
+  "idle_cpu_fixed": false,
+  "license": "Project Rust source license inherited; base source retained",
+  "host_validation": {
+    "state": "passed",
+    "command": "PYTHONDONTWRITEBYTECODE=1 python3 tests/gpu_idle_diagnostic_adapter.py -v",
+    "python_tests_passed": 3,
+    "actual_exec_scenarios": 30,
+    "invalid_profile_refusal_scenarios": 1,
+    "zero_fuzz_forward_reverse_reapply": true,
+    "insertion_removal_restores_exact_base": true,
+    "unchanged_pid_and_inherited_fd_verified_in_host_mock": true,
+    "scope": "Actual full adapter body plus actual std-only logging/venus support; optional immutable image-probe module stubbed disabled, fixture native child only. No Android/firmware/native VMM execution."
+  },
+  "host_inputs": {
+    "tests/gpu_idle_diagnostic_adapter.py": "b20d47c30025a85098301905ce7bba305cde5cdedfc74ccf5fe9083666e327b7",
+    "crates/gb-boot-logger/examples/support/android_metadata_log.rs": "5526dc9f2e7b6be30fbd68ada137fea260cc34fa54fe23407a722ea95b95eeab",
+    "crates/gb-boot-logger/examples/support/venus_gpu.rs": "45b8a6e4610b890fc237db0df894cd492c539af78449f6e07239af6ec2a2f8fc",
+    "crates/gb-boot-logger/examples/support/host_image_probe.rs": "6397dcb91151dbf19548860ff4684e0712ad328ca9b49aabee8686822fdcce27"
+  },
+  "build_validation": {
+    "state": "passed",
+    "matched_pair_provenance": "artifacts/device/first-boot-20261013/gpu-idle-native-build-20261020-v1/matched-pair-provenance.json",
+    "matched_pair_provenance_sha256": "614672e5cb4920549e6084beb924353a0e88f3cf34ef5990a5ac395554574bbe",
+    "native_baseline_sha256": "3f4dd9a986b612c0d759f4827d38f04da0ce40ef8142c9db3b820b68779c849a",
+    "outer_adapter_baseline_sha256": "678fad1b81b795a97cae2b44fcd39a6e3d7f8faa1ea1df0cf52a9d5a591e7084",
+    "native_candidate_sha256": "a783eaa4c45562478bd7aeacc6b745bc4622903286b842c0046a020fedba8365",
+    "native_candidate_bytes": 13083256,
+    "outer_adapter_candidate_sha256": "3a354da2c94ef9d4b7e2aed9c16c9151e16e0c70f92ac9f6d98659dd1637783d",
+    "outer_adapter_candidate_bytes": 660432,
+    "native_dynamic_abi_equal": true,
+    "new_native_undefined_symbols": [],
+    "adapter_static_aarch64_musl": true,
+    "real_image_probe_support_compiled": true,
+    "offline_unprivileged_build": true,
+    "native_incremental_not_clean_room": true,
+    "original_source_and_shared_android_output_unchanged": true,
+    "negative_attempts_preserved": true,
+    "runtime_verified": false
+  },
+  "integration_paths": {
+    "outer_adapter": "/system_ext/gb-virt-bin-runtime-v1/crosvm",
+    "native": "/system_ext/gb-virt-bin-runtime-v1/runtime/bin/crosvm",
+    "required_unchanged_fallback": "/system_ext/gb-virt-bin-runtime-v1/fallback/crosvm",
+    "required_unchanged_fallback_sha256": "2d278834378c1fbcad7d4dad415ee95c4a3d94ca97a70c9de34f4e749e7ef463",
+    "required_unchanged_fallback_bytes": 624320
+  },
+  "native_literal_limit": "Full native ELF contains log prefix and environment key once each; exact token is not contiguous after optimization. Exact predicate is source-pinned and host-tested. Adapter ELF contains the complete token. No runtime claim."
+}

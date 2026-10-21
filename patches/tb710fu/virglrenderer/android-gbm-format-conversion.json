@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "revision": "718f00f8b0483112f804925cf51576a8cade8046",
+  "patch_sha256": "4c9915501f54e4ac0ba8860edc44059698190a2d9543cd6dcddaae3af56c83f0",
+  "files": [
+    {
+      "path": "src/vrend_winsys_gbm_stubs.c",
+      "sha256": "3fd56049ff8e781d4cd20fefef4b6c48ec0536f71da2310fe55f789dcc4cc67f",
+      "result_sha256": "689dd7cf47174f79fcf1584371f90e508d00735c8474710fa359618d770bca48"
+    }
+  ],
+  "reference_path": "src/vrend_winsys_gbm.c",
+  "reference_sha256": "f3aae8b9bcbbbdf84bbcb8a1f57c63daa5be81d8de0e2991c695bd5ddae30a3e",
+  "license": "MIT, existing file notices preserved",
+  "scope": "Restore pure bidirectional virgl/DRM format metadata conversion using the existing real GBM converter table and error semantics; all allocation/transfer/export stubs unchanged",
+  "format_count": 10,
+  "conditions": {
+    "android_build_selects": "src/vrend_winsys_gbm_stubs.c",
+    "donor_fingerprint": "Dell/mica/mica:17/CL3B.260622.273.R1/16471258:user/release-keys",
+    "vendor_fingerprint": "Lenovo/TB710FU/TB710FU:16/BP2A.250605.031.A3/ZUI_17.5.04.059_260327_ROW:user/release-keys"
+  },
+  "installed": true,
+  "runtime_verified": true,
+  "runtime_report": "docs/tb710fu-android-gbm-format-20261020.json",
+  "runtime_scope": "Actual linear RGBA8 import now carries DRM ABGR8888; controlled image sampling passes. Other mappings have host/reference tests only."
+}

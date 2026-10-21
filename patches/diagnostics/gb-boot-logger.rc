@@ -1,0 +1,14 @@
+# Temporary diagnostics: 120 seconds, 4 MiB, private metadata files only.
+on early-init
+    mkdir /metadata/gb-port 0700 root root
+    # Label only our directory; do not relabel pre-existing file/hardlink targets.
+    restorecon /metadata/gb-port
+    start gb-boot-logger
+
+service gb-boot-logger /system_ext/bin/gb-boot-logger --service
+    class core
+    user root
+    group root log readproc
+    capabilities SYSLOG
+    disabled
+    oneshot

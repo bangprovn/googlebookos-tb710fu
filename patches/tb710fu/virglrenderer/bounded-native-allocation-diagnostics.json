@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "files": [
+    {
+      "path": "artifacts/source/crosvm-android16qpr2-backend/external/virglrenderer/src/venus/vkr_instance.c",
+      "sha256": "f39bf866b49acd1858fe7a29603c5b02376fa4560f0dc62d095af04a15843a36",
+      "result_sha256": "405ed6e0e0c42ef7fa4f03fd9a274674b2f07767939c89a8d037adcd09149e7c"
+    },
+    {
+      "path": "artifacts/source/crosvm-android16qpr2-backend/external/virglrenderer/src/venus/vkr_instance.h",
+      "sha256": "9e4e3d39a3e25ef81ff33a8fb2141952006e962e5f082e8effecdb3b799b3cea",
+      "result_sha256": "bf3e69422834985025b1ffabfe64dd9f5076bc71f9e885774e48192d1d474c9e"
+    }
+  ],
+  "patch_sha256": "b780e00b0f5d82c4edfdda713bce089806baaf5fdd3744dfda71ba8711b7223e",
+  "revision": "718f00f8b0483112f804925cf51576a8cade8046",
+  "license": "MIT per retained source headers",
+  "scope": "Explicit original-Venus allocation diagnostics; constant operation/error classes only, one event per operation per process; no layer enablement",
+  "runtime_verified": true,
+  "installed": true,
+  "qualification_scope": "Callback creation only; transfer still fails and no native operation classified",
+  "runtime_report": "docs/tb710fu-venus-diagnostics-20261019.json"
+}

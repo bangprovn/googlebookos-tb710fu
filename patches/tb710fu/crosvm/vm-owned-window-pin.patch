@@ -1,0 +1,110 @@
+--- a/hypervisor/src/gunyah/mod.rs
++++ b/hypervisor/src/gunyah/mod.rs
+@@ -718,9 +718,14 @@
+                         if !prep.populated || !prep.mlocked {
+                             return Err(Error::new(libc::ENOMEM));
+                         }
+-                        guest_ram_pin = Some(pin::LongtermPin::pin_required(
+-                            region.host_addr as u64, full_size, pin::PinSite::PreBoot,
+-                        )?);
++                        // The original app inherits a seccomp filter denying io_uring.
++                        // Retain the same FOLL_LONGTERM contract through the bound VM
++                        // driver. Its real VM teardown owns the complete pin lifetime.
++                        base::info!("GH-PIN: required whole-window pin begin ({} MiB)", full_size >> 20);
++                        ram_pool::pin_window(vm_descriptor.as_raw_descriptor(), region.host_addr as u64, full_size)
++                            .map_err(|e| Error::new(e.raw_os_error().unwrap_or(libc::EINVAL)))?;
++                        base::info!("GH-PIN: required whole-window pin held ({} MiB)", full_size >> 20);
++                        base::info!("GH-RAM-POOL: whole-window pin owned by real VM teardown");
+                         let stats = ram_pool::control(vm_descriptor.as_raw_descriptor(), full_size, true)
+                             .map_err(|e| Error::new(e.raw_os_error().unwrap_or(libc::EINVAL)))?;
+                         base::info!("GH-RAM-POOL: pinned available_2m={} served_2m={} held_2m={}",
+--- a/hypervisor/src/gunyah/ram_pool.rs
++++ b/hypervisor/src/gunyah/ram_pool.rs
+@@ -9,6 +9,7 @@
+ const WINDOW_BYTES: u64 = WINDOWS[1];
+ const MAX_PAGES: u32 = 1024; // pool2GiB maximum, units of2MiB
+ const CONTROL: libc::c_ulong = 0xc0204717;
++const PIN_WINDOW: libc::c_ulong = 0xc0204718;
+ 
+ #[repr(C)]
+ #[derive(Clone, Copy, Default)]
+@@ -22,6 +23,49 @@
+     reserved: u32,
+ }
+ const _: [(); 32] = [(); std::mem::size_of::<Request>()];
++
++#[repr(C)]
++#[derive(Clone, Copy, Default)]
++struct PinRequest {
++    vm_fd: i32,
++    flags: u32,
++    memory_size: u64,
++    userspace_addr: u64,
++    pinned_pages: u32,
++    reserved: u32,
++}
++const _: [(); 32] = [(); std::mem::size_of::<PinRequest>()];
++
++fn pin_scope(fd: i32, addr: u64, bytes: u64) -> bool {
++    fd >= 0 && addr != 0 && addr & 4095 == 0 && WINDOWS.contains(&bytes)
++        && addr.checked_add(bytes).is_some()
++}
++
++fn pin_receipt(r: &PinRequest, fd: i32, addr: u64, bytes: u64) -> io::Result<()> {
++    if !pin_scope(fd, addr, bytes) || r.vm_fd != fd || r.flags != 0
++        || r.memory_size != bytes || r.userspace_addr != addr || r.reserved != 0
++        || r.pinned_pages as u64 != bytes >> 12 {
++        return Err(invalid());
++    }
++    Ok(())
++}
++
++/// Kernel retains the writable FOLL_LONGTERM pin until the real VM's normal
++/// teardown, including on copy/firmware failure. No unpin ioctl or new syscall
++/// permission is needed in the original app's inherited seccomp sandbox.
++pub fn pin_window(vm_fd: i32, addr: u64, bytes: u64) -> io::Result<()> {
++    if !pin_scope(vm_fd, addr, bytes) {
++        return Err(io::Error::new(io::ErrorKind::InvalidInput, "RAM-window scope"));
++    }
++    let file = File::open("/dev/gunyah_share")?;
++    let mut r = PinRequest { vm_fd, memory_size: bytes, userspace_addr: addr,
++        ..PinRequest::default() };
++    // SAFETY: r is the exact32byte in/out ABI; file is an owned live fd.
++    let ret = unsafe { libc::ioctl(file.as_raw_fd(), PIN_WINDOW as _, &mut r) };
++    if ret < 0 { return Err(io::Error::last_os_error()); }
++    if ret != 0 { return Err(invalid()); }
++    pin_receipt(&r, vm_fd, addr, bytes)
++}
+ 
+ #[derive(Debug)]
+ pub struct Stats {
+@@ -83,6 +127,29 @@
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++
++    #[test]
++    fn pin_scope_and_receipt_are_exact() {
++        for bytes in WINDOWS {
++            let r = PinRequest { vm_fd: 11, memory_size: bytes, userspace_addr: 0x10000000,
++                pinned_pages: (bytes >> 12) as u32, ..PinRequest::default() };
++            assert!(pin_receipt(&r, 11, r.userspace_addr, bytes).is_ok());
++            for field in 0..6 {
++                let mut bad = r;
++                match field {
++                    0 => bad.vm_fd += 1, 1 => bad.flags = 1,
++                    2 => bad.memory_size -= 4096, 3 => bad.userspace_addr += 4096,
++                    4 => bad.pinned_pages -= 1, _ => bad.reserved = 1,
++                }
++                assert!(pin_receipt(&bad, 11, r.userspace_addr, bytes).is_err());
++            }
++        }
++        for (fd, addr, bytes) in [(-1, 4096, WINDOWS[0]), (11, 0, WINDOWS[0]),
++            (11, 4097, WINDOWS[0]), (11, u64::MAX - 4095, WINDOWS[0]),
++            (11, 4096, WINDOWS[0] - 4096)] {
++            assert_eq!(pin_window(fd, addr, bytes).unwrap_err().kind(), io::ErrorKind::InvalidInput);
++        }
++    }
+ 
+     #[test]
+     fn rejects_mutated_inputs_and_impossible_pool_counts() {

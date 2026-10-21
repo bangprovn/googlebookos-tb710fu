@@ -1,0 +1,5 @@
+
+; Terminal maps to priv_app_all through vmlauncher_app in the active platform
+; policy. Permit the opt-in Rust adapter to exec the retained original VMM
+; within its existing confined VMM domain; no permission is added to the app.
+(allow priv_app_all_virtmgr_crosvm crosvm_exec (file (execute_no_trans)))

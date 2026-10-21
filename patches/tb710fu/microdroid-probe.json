@@ -1,0 +1,35 @@
+{
+  "name": "gb-tb710fu-stock-microdroid-probe",
+  "protected": true,
+  "kernel": "/data/local/tmp/gb-vm-probe-20261018-v1/microdroid_kernel",
+  "initrd": "/data/local/tmp/gb-vm-probe-20261018-v1/microdroid_initrd_debuggable.img",
+  "params": "console=hvc0 panic=0",
+  "memory_mib": 512,
+  "platform_version": "~1.0",
+  "console_input_device": "hvc0",
+  "disks": [
+    {
+      "partitions": [
+        {
+          "label": "vm-instance",
+          "path": "/data/local/tmp/gb-vm-probe-20261018-v1/instance.img",
+          "writable": true
+        }
+      ],
+      "writable": true
+    },
+    {
+      "partitions": [
+        {
+          "label": "vbmeta_a",
+          "path": "/data/local/tmp/gb-vm-probe-20261018-v1/microdroid_vbmeta.img"
+        },
+        {
+          "label": "super",
+          "path": "/data/local/tmp/gb-vm-probe-20261018-v1/microdroid_super.img"
+        }
+      ],
+      "writable": false
+    }
+  ]
+}

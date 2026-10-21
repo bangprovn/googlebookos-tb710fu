@@ -1,0 +1,12 @@
+{
+  "path": "artifacts/source/crosvm-android16qpr2-backend/external/virglrenderer/src/venus/vkr_library.c",
+  "sha256": "b6ec3bf9db8a5a793bcceb9ff9294e8349b4b950d6e0b6b7450b23ef319a33a2",
+  "revision": "718f00f8b0483112f804925cf51576a8cade8046",
+  "firmware_written": false,
+  "result_sha256": "afcd0a01106fe3127532bbc16645df4a89340a6f915aa9df8ab6da71ecf2f90c",
+  "patch_sha256": "034919aa08121ddbb39dabc1026ca8c8cd7a235268815c94330173218e5d4369",
+  "patch_forward_reverse_byte_exact": true,
+  "scope": "Fail explicitly selected private Vulkan loads without fallback; emit bounded owned loader metadata; preserve default loader and process-lifetime cache",
+  "license": "MIT per retained source header",
+  "runtime_verified": false
+}

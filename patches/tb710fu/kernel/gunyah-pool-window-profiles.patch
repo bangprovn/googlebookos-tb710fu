@@ -1,0 +1,96 @@
+--- a/drivers/virt/gunyah/gb-runtime-share.c
++++ b/drivers/virt/gunyah/gb-runtime-share.c
+@@ -232,7 +232,8 @@
+ 			return -EFAULT;
+ 		if (pool.flags > 1 || pool.reserved || pool.available_2m ||
+ 		    pool.served_2m || pool.held_2m ||
+-		    pool.memory_size != (2042ULL << 20))
++		    (pool.memory_size != GHSM_POOL_WINDOW_512 &&
++		     pool.memory_size != GHSM_POOL_WINDOW_2048))
+ 			return -EINVAL;
+ 		fd = pool.vm_fd;
+ 	} else {
+--- a/drivers/virt/gunyah/gb-runtime-share.h
++++ b/drivers/virt/gunyah/gb-runtime-share.h
+@@ -26,8 +26,11 @@
+ 
+ /* Our in-tree optional RAM supply, not a stock/OEM ABI. flags0 binds;
+  * flags1 queries this VM's existing binding. Outputs must enter as zero.
+- * Only the2042MiB runtime window is currently supported.
++ * The506MiB/2042MiB windows correspond to512MiB/2048MiB guest RAM.
+  */
++#define GHSM_POOL_WINDOW_512 (506ULL << 20)
++#define GHSM_POOL_WINDOW_2048 (2042ULL << 20)
++
+ struct ghsm_bind_ram_pool {
+ 	__s32 vm_fd;
+ 	__u32 flags;
+--- a/drivers/virt/gunyah/gb-ram-pool.c
++++ b/drivers/virt/gunyah/gb-ram-pool.c
+@@ -25,6 +25,7 @@
+ #include <trace/events/sched.h>
+ #include <trace/hooks/mm.h>
+ #include "vm_mgr.h"
++#include "gb-runtime-share.h"
+ 
+ #include "reserve-core/gh_defs.h"
+ #include "reserve-core/gh_kernel_env.h"
+@@ -39,6 +40,7 @@
+ static DEFINE_MUTEX(gb_bind_lock);
+ static struct gh_vm *gb_bound_vm;
+ static pid_t gb_bound_tgid;
++static u64 gb_bound_bytes;
+ static struct delayed_work gb_release_work;
+ static atomic_t gb_release_rounds = ATOMIC_INIT(0);
+ 
+@@ -144,12 +146,15 @@
+ 	struct page *page;
+ 	if (!READ_ONCE(gb_ready) || !current->mm || in_interrupt() || in_atomic() || irqs_disabled() ||
+ 	    !(gfp & __GFP_MOVABLE) || !(gfp & __GFP_COMP) ||
+-	    !(gfp & __GFP_DIRECT_RECLAIM) ||
+ 	    (gfp & (__GFP_DMA | __GFP_DMA32 | __GFP_ACCOUNT)) ||
+ 	    ((gfp & __GFP_THISNODE) && nid != 0) ||
+ 	    (mask && !node_isset(0, *mask)) ||
+ 	    !gh_pool_owner_maybe(current->mm))
+ 		return NULL;
++	/* A preallocated fast-path folio also serves GFP_TRANSHUGE_LIGHT.
++	 * No reclaim/compaction is performed here; atomic/IRQ contexts remain
++	 * excluded and native allocation hygiene runs outside all pool locks.
++	 */
+ 	page = gh_pool_avail_to_served(current->mm, task_tgid_nr(current));
+ 	if (page)
+ 		/* Native allocation hygiene, including HW KASAN tags and mandatory
+@@ -167,7 +172,7 @@
+ 	struct gh_pool_stats stats;
+ 	if (!READ_ONCE(gb_ready))
+ 		return -EOPNOTSUPP;
+-	if (bytes != (2042ULL << 20))
++	if (bytes != GHSM_POOL_WINDOW_512 && bytes != GHSM_POOL_WINDOW_2048)
+ 		return -EINVAL;
+ 	mutex_lock(&gb_bind_lock);
+ 	if (!query && !gb_bound_vm) {
+@@ -178,6 +183,8 @@
+ 	if (query) {
+ 		if (gb_bound_vm != vm)
+ 			ret = -ENOENT;
++		else if (gb_bound_bytes != bytes)
++			ret = -EINVAL;
+ 	} else if (gb_bound_vm) {
+ 		ret = gb_bound_vm == vm ? -EALREADY : -EBUSY;
+ 	} else if (gh_pool_avail() < (bytes >> 21)) {
+@@ -189,6 +196,7 @@
+ 			ret = -ENOSPC;
+ 		} else {
+ 			gb_bound_vm = vm;
++			gb_bound_bytes = bytes;
+ 			gb_bound_tgid = task_tgid_nr(current);
+ 		}
+ 	}
+@@ -210,6 +218,7 @@
+ 		if (gh_mm_users(vm->mm) == 0)
+ 			gh_pool_owner_mark_dead(gb_bound_tgid);
+ 		gb_bound_vm = NULL;
++		gb_bound_bytes = 0;
+ 		atomic_set(&gb_release_rounds, GH_RELEASE_ROUNDS);
+ 		mod_delayed_work(system_wq, &gb_release_work, HZ);
+ 	}

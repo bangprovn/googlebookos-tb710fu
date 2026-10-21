@@ -1,0 +1,14 @@
+--- a/vm_control/src/gpu.rs
++++ b/vm_control/src/gpu.rs
+@@ -66,9 +66,9 @@
+     // That should be changed once compat fields below are deprecated.
+     pub dpi: Option<(u32, u32)>,
+     // `horizontal-dpi` and `vertical-dpi` are supported for CLI backward compatibility.
+-    #[serde(rename = "horizontal-dpi")]
++    #[serde(rename = "horizontal-dpi", skip_serializing_if = "Option::is_none")]
+     pub __horizontal_dpi_compat: Option<u32>,
+-    #[serde(rename = "vertical-dpi")]
++    #[serde(rename = "vertical-dpi", skip_serializing_if = "Option::is_none")]
+     pub __vertical_dpi_compat: Option<u32>,
+ }
+ 

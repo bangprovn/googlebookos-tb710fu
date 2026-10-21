@@ -1,0 +1,141 @@
+--- a/src/gb_android_image_bridge.h
++++ b/src/gb_android_image_bridge.h
+@@ -31,0 +32,32 @@
++
++/* Failure-only diagnostics are independent of the original success/layout
++ * budget. ACTIVE calls retain their single GL-owner/reference contract.
++ * Counters are atomic, but a snapshot across counters is observational rather
++ * than transactional. Charged slots include allocation reservations; active
++ * counts allocated nonquarantined objects, including construction in progress.
++ * Quarantine here records D91's existing retention; this is not a reaper.
++ */
++static struct {
++   atomic_uint active, pending, quarantined, allocated, created, freed, slot_refused;
++   atomic_uint create_failed, refresh_ok, refresh_failed, refresh_skipped, reports;
++} gb_image_diag;
++static void gb_image_diag_increment(atomic_uint *counter)
++{
++   unsigned value=atomic_load_explicit(counter,memory_order_relaxed);
++   while (value!=UINT32_MAX && !atomic_compare_exchange_weak_explicit(
++      counter,&value,value+1,memory_order_relaxed,memory_order_relaxed)) {}
++}
++static void gb_image_diag_failure(const char *event,const char *stage,int result,
++   bool vk_result_valid,uint32_t width,uint32_t height)
++{
++   unsigned report=atomic_load_explicit(&gb_image_diag.reports,memory_order_relaxed);
++   do { if (report>=32) return; }
++   while (!atomic_compare_exchange_weak_explicit(&gb_image_diag.reports,&report,report+1,
++      memory_order_relaxed,memory_order_relaxed));
++   vrend_printf("GB-ANDROID-IMAGE-STATE:{\"schema_version\":1,\"event\":\"%s\",\"stage\":\"%s\",\"result\":%d,\"vk_result_valid\":%s,\"width\":%u,\"height\":%u,\"charged\":%u,\"active\":%u,\"pending\":%u,\"quarantined\":%u,\"allocated\":%u,\"created\":%u,\"freed\":%u,\"slot_refused\":%u,\"create_failed\":%u,\"refresh_ok\":%u,\"refresh_failed\":%u,\"refresh_skipped\":%u,\"snapshot_transactional\":false}\n",
++      event,stage,result,vk_result_valid?"true":"false",width,height,
++      atomic_load(&gb_image_slots),atomic_load(&gb_image_diag.active),atomic_load(&gb_image_diag.pending),
++      atomic_load(&gb_image_diag.quarantined),atomic_load(&gb_image_diag.allocated),atomic_load(&gb_image_diag.created),atomic_load(&gb_image_diag.freed),
++      atomic_load(&gb_image_diag.slot_refused),atomic_load(&gb_image_diag.create_failed),atomic_load(&gb_image_diag.refresh_ok),
++      atomic_load(&gb_image_diag.refresh_failed),atomic_load(&gb_image_diag.refresh_skipped));
++}
+@@ -118,0 +151 @@
++   bool diagnostic_counted, diagnostic_quarantined, diagnostic_pending;
+@@ -158 +191 @@
+-#define GB_VK(stage, expression) do { VkResult r = (expression); if (r != VK_SUCCESS) { gb_image_log(stage, r, g->width, g->height); goto fail; } } while (0)
++#define GB_VK(stage, expression) do { VkResult r = (expression); if (r != VK_SUCCESS) { gb_image_diag_failure("vulkan_failure",stage,r,true,g->width,g->height); gb_image_log(stage, r, g->width, g->height); goto fail; } } while (0)
+@@ -165,3 +198,12 @@
+-   if (g->pending && (!g->GetFenceStatus || g->GetFenceStatus(g->device, g->fence) != VK_SUCCESS)) {
+-      gb_image_log("quarantine_pending", -1, g->width, g->height);
+-      return;
++   if (g->pending) {
++      VkResult status=VK_NOT_READY;
++      bool known=g->GetFenceStatus!=NULL;
++      if (!known || (status=g->GetFenceStatus(g->device,g->fence))!=VK_SUCCESS) {
++         if (g->diagnostic_counted && !g->diagnostic_quarantined) {
++            atomic_fetch_sub(&gb_image_diag.active,1);atomic_fetch_add(&gb_image_diag.quarantined,1);
++            g->diagnostic_quarantined=true;
++            gb_image_diag_failure("destroy_quarantine","fence_status",known?status:0,known,g->width,g->height);
++         }
++         gb_image_log("quarantine_pending", -1, g->width, g->height);
++         return;
++      }
+@@ -183,0 +226,5 @@
++   if (g->diagnostic_counted) {
++      atomic_fetch_sub(g->diagnostic_quarantined?&gb_image_diag.quarantined:&gb_image_diag.active,1);
++      if (g->diagnostic_pending) atomic_fetch_sub(&gb_image_diag.pending,1);
++      gb_image_diag_increment(&gb_image_diag.freed);
++   }
+@@ -207 +254 @@
+-      gb_image_log("not_sync_exportable_dma_buf",EINVAL,w,h); return NULL;
++      gb_image_diag_failure("import_refused","sync_export",EINVAL,false,w,h);gb_image_log("not_sync_exportable_dma_buf",EINVAL,w,h); return NULL;
+@@ -219 +266 @@
+-      gb_image_log("layout_refused",EINVAL,w,h); return NULL;
++      gb_image_diag_failure("import_refused","layout",EINVAL,false,w,h);gb_image_log("layout_refused",EINVAL,w,h); return NULL;
+@@ -222 +269 @@
+-   do { if (slots>=GB_IMAGE_SLOTS) { gb_image_log("slot_budget",ENOMEM,w,h); return NULL; } }
++   do { if (slots>=GB_IMAGE_SLOTS) { gb_image_diag_increment(&gb_image_diag.slot_refused);gb_image_diag_failure("slot_refused","slot_budget",ENOMEM,false,w,h);gb_image_log("slot_budget",ENOMEM,w,h); return NULL; } }
+@@ -226,0 +274 @@
++   g->diagnostic_counted=true;atomic_fetch_add(&gb_image_diag.active,1);gb_image_diag_increment(&gb_image_diag.allocated);
+@@ -325,0 +374 @@
++   gb_image_diag_increment(&gb_image_diag.created);
+@@ -327,0 +377 @@
++   gb_image_diag_increment(&gb_image_diag.create_failed);gb_image_diag_failure("create_failed","validation_or_driver",EINVAL,false,w,h);
+@@ -333 +383,2 @@
+-   if (!g || g->failed) return false;
++   if (!g) return false;
++   if (g->failed) {gb_image_diag_increment(&gb_image_diag.refresh_skipped);return false;}
+@@ -335 +386,4 @@
+-   if (ioctl(g->sync_fd,DMA_BUF_IOCTL_EXPORT_SYNC_FILE,&sync) || sync.fd<0) goto fail;
++   int sync_result=ioctl(g->sync_fd,DMA_BUF_IOCTL_EXPORT_SYNC_FILE,&sync);
++   if (sync_result || sync.fd<0) {
++      gb_image_diag_failure("refresh_sync_failed","sync_export",sync_result?errno:0,false,g->width,g->height);goto fail;
++   }
+@@ -338 +392,3 @@
+-   if (ready!=1 || !(poll_fd.revents&POLLIN) || (poll_fd.revents&(POLLERR|POLLNVAL))) goto fail;
++   if (ready!=1 || !(poll_fd.revents&POLLIN) || (poll_fd.revents&(POLLERR|POLLNVAL))) {
++      gb_image_diag_failure("refresh_sync_failed","poll_ready",ready,false,g->width,g->height);goto fail;
++   }
+@@ -343 +399,2 @@
+-   if (g->GetFenceStatus(g->device,g->fence)!=VK_NOT_READY) goto fail;
++   VkResult status=g->GetFenceStatus(g->device,g->fence);
++   if (status!=VK_NOT_READY) {gb_image_diag_failure("refresh_fence_failed","before_submit",status,true,g->width,g->height);goto fail;}
+@@ -361 +418,3 @@
+-   g->pending=true;GB_VK("submit",g->QueueSubmit(g->queue,1,&submit,g->fence));
++   g->pending=true;
++   if (g->diagnostic_counted && !g->diagnostic_pending) {g->diagnostic_pending=true;atomic_fetch_add(&gb_image_diag.pending,1);}
++   GB_VK("submit",g->QueueSubmit(g->queue,1,&submit,g->fence));
+@@ -363 +422,3 @@
+-   GB_VK("signalled",g->GetFenceStatus(g->device,g->fence));g->pending=false;g->copied=true;return true;
++   GB_VK("signalled",g->GetFenceStatus(g->device,g->fence));
++   if (g->diagnostic_pending) {atomic_fetch_sub(&gb_image_diag.pending,1);g->diagnostic_pending=false;}
++   gb_image_diag_increment(&gb_image_diag.refresh_ok);g->pending=false;g->copied=true;return true;
+@@ -364,0 +426,2 @@
++   gb_image_diag_increment(&gb_image_diag.refresh_failed);
++   gb_image_diag_failure("refresh_failed","validation_or_driver",EIO,false,g->width,g->height);
+--- a/src/vrend_renderer.c
++++ b/src/vrend_renderer.c
+@@ -823,0 +824,13 @@
++/* Independent failure-only cap: ordinary image import successes cannot hide
++ * the first compositor resource-read/import failure. Numeric metadata only. */
++static atomic_uint gb_android_renderer_diag_reports;
++static void gb_android_renderer_failure(const char *event,uint32_t resource_id,
++   int result,bool has_sub,bool switched)
++{
++   unsigned report=atomic_load(&gb_android_renderer_diag_reports);
++   do {if (report>=16) return;}
++   while (!atomic_compare_exchange_weak(&gb_android_renderer_diag_reports,&report,report+1));
++   vrend_printf("GB-ANDROID-IMAGE-RENDERER:{\"schema_version\":1,\"event\":\"%s\",\"resource_id\":%u,\"result\":%d,\"has_sub\":%s,\"context_switch_succeeded\":%s}\n",
++      event,resource_id,result,has_sub?"true":"false",switched?"true":"false");
++}
++
+@@ -826,0 +840 @@
++   bool switched=false;
+@@ -828 +842,2 @@
+-   if (ctx->sub && vrend_hw_switch_context(ctx,true) && virgl_egl_android_bridge_refresh(res->gb_android_image)) return 0;
++   switched=ctx->sub && vrend_hw_switch_context(ctx,true);
++   if (switched && virgl_egl_android_bridge_refresh(res->gb_android_image)) return 0;
+@@ -829,0 +845 @@
++   gb_android_renderer_failure("resource_read_failed",res->id,EIO,ctx->sub!=NULL,switched);
+@@ -12429 +12445,2 @@
+-      if (virgl_egl_android_bridge_required(egl)) {
++      const bool android_bridge=virgl_egl_android_bridge_required(egl);
++      if (android_bridge) {
+@@ -12444,0 +12462 @@
++         if (android_bridge) gb_android_renderer_failure("missing_egl_image",res_id,EINVAL,ctx->sub!=NULL,false);
+@@ -12453,0 +12472 @@
++         if (gr->gb_android_image) gb_android_renderer_failure("texture_import_failed",res_id,ret,ctx->sub!=NULL,false);

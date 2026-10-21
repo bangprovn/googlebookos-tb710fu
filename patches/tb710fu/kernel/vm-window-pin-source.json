@@ -1,0 +1,34 @@
+{
+  "status": "passed",
+  "files": {
+    "drivers/virt/gunyah/gb-runtime-share.c": {
+      "before_sha256": "05e5a28f1396ca7dbf5883482b0f8a7b1800ec19d3abcd9f2fa1180d0db3289d",
+      "after_sha256": "8389786ab7858cdc289e19bb3d522b9212930ed01bdd94712bf14982416adb95"
+    },
+    "drivers/virt/gunyah/gb-runtime-share.h": {
+      "before_sha256": "d2dd3c29363438c7b6e0722e71d6a1b4536633540a276e63f916c7ede1e833cc",
+      "after_sha256": "0c1cbb82ef13ce2b6fc603afbe65d0285cd22db24303735b209e188a45ef11d1"
+    },
+    "drivers/virt/gunyah/vm_mgr.c": {
+      "before_sha256": "d27c113c0bd7410e13f2f2124a7ed95f7cef6a3da99a7462677d242381deaac6",
+      "after_sha256": "699b459075256696b4a7bb92d3c978b34756e6ea7befa98092e88de0c02c7d6d"
+    }
+  },
+  "source_patch_roundtrip": true,
+  "new_exports": false,
+  "config_layout_or_certificate_changed": false,
+  "vm_owned_window_pin": true,
+  "firmware_calls_during_pin": false,
+  "seccomp_or_selinux_relaxed": false,
+  "prerequisite": "gunyah-dense-ram-pool.patch then gunyah-pool-window-profiles.patch",
+  "pin_wire_bytes": 32,
+  "pin_ioctl": "0xc0204718",
+  "supported_window_mib": [
+    506,
+    2042
+  ],
+  "max_bound_vms": 1,
+  "normal_vm_teardown_releases_pin": true,
+  "early_userspace_unpin_supported": false,
+  "mm_and_actual_vm_fops_required": true
+}

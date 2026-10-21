@@ -1,0 +1,253 @@
+--- a/hypervisor/src/gunyah/shim_abi.rs
++++ b/hypervisor/src/gunyah/shim_abi.rs
+@@ -27,12 +27,12 @@
+ pub const SHIM_HEADER_MAGIC: u64 = 0x4d53_4856_554d_5644;
+ /// "MVSHANDO", little-endian.
+ pub const SHIM_HANDOFF_MAGIC: u64 = 0x4f44_4e41_4853_564d;
+-pub const SHIM_ABI_VERSION: u32 = 2;
++pub const SHIM_ABI_VERSION: u32 = 3;
+ 
+ /// The most parcels one window may be shared as. A window is one parcel unless something forces
+ /// it to be split, so this is headroom rather than a target: every parcel costs one of the 1024
+ /// the resource manager allows per VM, shared with Android's own and not returned until reboot.
+-pub const SHIM_MAX_PARCELS: usize = 128;
++pub const SHIM_MAX_PARCELS: usize = 1024;
+ 
+ /// Offset of the header within the shim image. Offset 0 is the entry branch.
+ pub const SHIM_HEADER_OFFSET: usize = 8;
+@@ -118,6 +118,6 @@
+     }
+ }
+ 
+-// Both consumers must keep the complete versioned handoff within one 4 KiB page.
+-const _: () = assert!(core::mem::size_of::<ShimHandoff>() <= 4096);
++// Both consumers must keep the complete versioned handoff within 64 KiB of the existing 2 MiB handoff region.
++const _: () = assert!(core::mem::size_of::<ShimHandoff>() <= 65536);
+ const _: () = assert!(core::mem::size_of::<ShimHeader>() == 64);
+--- a/droidvm-shim/src/start.S
++++ b/droidvm-shim/src/start.S
+@@ -17,7 +17,7 @@
+ 	.globl shim_header
+ shim_header:				// +0x08, struct ShimHeader
+ 	.quad	0x4d534856554d5644		// magic "DVMUVHSM"
+-	.word	2				// version
++	.word	3				// version
+ 	.word	0				// flags
+ 	.quad	0				// payload
+ 	.quad	0				// handoff
+--- a/hypervisor/src/gunyah/runtime_parcel_plan.rs
++++ b/hypervisor/src/gunyah/runtime_parcel_plan.rs
+@@ -0,0 +1,123 @@
++// Copyright 2026 The ChromiumOS Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++//! Bounded adaptive parcel scheduling. No firmware or memory ownership operations.
++const UNIT: u64 = 2 << 20;
++
++#[derive(Debug, PartialEq, Eq)]
++pub enum PlanError {
++    InvalidWindow,
++    TooManyParcels,
++}
++
++pub struct ParcelPlan {
++    total: u64,
++    offset: u64,
++    preferred: u64,
++    current: u64,
++    count: usize,
++    slots: usize,
++}
++
++impl ParcelPlan {
++    pub fn new(total: u64, preferred: u64, slots: usize) -> Result<Self, PlanError> {
++        if total == 0 || total > (2 << 30) || total % UNIT != 0
++            || preferred < UNIT || preferred > (2 << 30) || preferred % UNIT != 0
++            || slots == 0
++        {
++            return Err(PlanError::InvalidWindow);
++        }
++        Ok(Self { total, offset: 0, preferred, current: preferred, count: 0, slots })
++    }
++
++    pub fn request(&self) -> Result<Option<(u64, u64)>, PlanError> {
++        if self.offset == self.total {
++            return Ok(None);
++        }
++        if self.count == self.slots {
++            return Err(PlanError::TooManyParcels);
++        }
++        Ok(Some((self.offset, self.current.min(self.total - self.offset))))
++    }
++
++    /// Retry only a kernel refusal that occurred before SCM/RM transfer.
++    /// False means the minimum-sized request was refused; do not retry it.
++    pub fn split_refused(&mut self) -> Result<bool, PlanError> {
++        let Some((_, length)) = self.request()? else {
++            return Err(PlanError::InvalidWindow);
++        };
++        if length <= UNIT {
++            return Ok(false);
++        }
++        self.current = (length / 2).div_ceil(UNIT) * UNIT;
++        Ok(true)
++    }
++
++    pub fn accepted(&mut self) -> Result<(), PlanError> {
++        let Some((offset, length)) = self.request()? else {
++            return Err(PlanError::InvalidWindow);
++        };
++        self.offset = offset + length;
++        self.count += 1;
++        self.current = self.preferred;
++        Ok(())
++    }
++
++    pub fn count(&self) -> usize { self.count }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn fragmented_two_gib_window_fits_and_covers_every_byte_once() {
++        let mut plan = ParcelPlan::new(2042 << 20, 16 << 20, 1024).unwrap();
++        let mut covered = 0;
++        while let Some((offset, length)) = plan.request().unwrap() {
++            assert_eq!(offset, covered);
++            if length > UNIT {
++                assert!(plan.split_refused().unwrap());
++            } else {
++                assert!(length / 4096 <= 512);
++                covered += length;
++                plan.accepted().unwrap();
++            }
++        }
++        assert_eq!(covered, 2042 << 20);
++        assert_eq!(plan.count(), 1021);
++    }
++
++    #[test]
++    fn mixed_backing_retries_same_offset_without_losing_completed_parcels() {
++        let mut plan = ParcelPlan::new(506 << 20, 16 << 20, 1024).unwrap();
++        let mut covered = 0;
++        while let Some((offset, length)) = plan.request().unwrap() {
++            assert_eq!(offset, covered);
++            let limit = if offset < 480 << 20 { 16 << 20 } else { UNIT };
++            if length > limit {
++                let count = plan.count();
++                assert!(plan.split_refused().unwrap());
++                assert_eq!(plan.count(), count);
++            } else {
++                covered += length;
++                plan.accepted().unwrap();
++            }
++        }
++        assert_eq!(covered, 506 << 20);
++        assert_eq!(plan.count(), 43);
++    }
++
++    #[test]
++    fn exhausted_slots_and_minimum_refusal_are_terminal() {
++        let mut plan = ParcelPlan::new(4 << 20, UNIT, 1).unwrap();
++        assert!(!plan.split_refused().unwrap());
++        plan.accepted().unwrap();
++        assert_eq!(plan.request(), Err(PlanError::TooManyParcels));
++        assert_eq!(plan.split_refused(), Err(PlanError::TooManyParcels));
++        for (size, preferred, slots) in [(0, UNIT, 1), (1, UNIT, 1), (UNIT, 1, 1), (UNIT, UNIT, 0), ((2 << 30) + UNIT, UNIT, 1024)] {
++            assert!(matches!(ParcelPlan::new(size, preferred, slots), Err(PlanError::InvalidWindow)));
++        }
++    }
++}
+--- a/hypervisor/src/gunyah/mod.rs
++++ b/hypervisor/src/gunyah/mod.rs
+@@ -10,6 +10,7 @@
+ mod mthp;
+ pub mod shim_abi;
+ mod pin;
++mod runtime_parcel_plan;
+ use std::cmp::Reverse;
+ use std::collections::BTreeMap;
+ use std::collections::BinaryHeap;
+@@ -1109,31 +1110,24 @@
+             // -- MAX_MEMPARCEL_PER_VM is 1024 for the whole VM, shared with Android's own -- and
+             // buys nothing unless something is measured to be faster for it, so nobody gets it
+             // without asking.
+-            let chunk = std::env::var("DROIDVM_SHIM_PARCEL_MB")
+-                .ok()
+-                .and_then(|v| v.parse::<u64>().ok())
+-                .map(|mb| mb << 20)
+-                .filter(|c| *c != 0)
+-                // A parcel is built out of folios; a chunk that is not a whole number of them
+-                // would hand the guest a boundary in the middle of one.
+-                .map(|c| c.next_multiple_of(2 << 20).min(size))
+-                .unwrap_or(size);
+-            let nparcels = size.div_ceil(chunk);
+-            if nparcels > abi::SHIM_MAX_PARCELS as u64 {
+-                base::error!(
+-                    "GH-SHIM: {:#x} of window in {:#x} chunks needs {} parcels; the handoff page                      holds {}",
+-                    size,
+-                    chunk,
+-                    nparcels,
+-                    abi::SHIM_MAX_PARCELS,
+-                );
+-                return Err(Error::new(EINVAL));
+-            }
+-
++            let chunk = match std::env::var("DROIDVM_SHIM_PARCEL_MB") {
++                Ok(value) => {
++                    let mb = value.parse::<u64>().map_err(|_| Error::new(EINVAL))?;
++                    if mb == 0 { size } else {
++                        mb.checked_mul(1 << 20)
++                            .and_then(|bytes| bytes.checked_add((2 << 20) - 1))
++                            .map(|bytes| (bytes / (2 << 20)) * (2 << 20))
++                            .ok_or_else(|| Error::new(EINVAL))?.min(size)
++                    }
++                }
++                Err(std::env::VarError::NotPresent) => size,
++                Err(_) => return Err(Error::new(EINVAL)),
++            };
++            let mut plan = runtime_parcel_plan::ParcelPlan::new(size, chunk, abi::SHIM_MAX_PARCELS)
++                .map_err(|_| Error::new(EINVAL))?;
+             let started = std::time::Instant::now();
+-            for i in 0..nparcels {
+-                let off = i * chunk;
+-                let len = chunk.min(size - off);
++            while let Some((off, len)) = plan.request().map_err(|_| Error::new(libc::E2BIG))? {
++                let i = plan.count() as u64;
+                 let at = window
+                     .guest_addr
+                     .checked_add(off)
+@@ -1156,7 +1150,19 @@
+                         Error::new(EINVAL)
+                     })?;
+                 // exec: the payload runs from here.
+-                let handle = self.share_blob(at, Box::new(mapping), None, 0, false, true)?;
++                let handle = match self.share_blob(at, Box::new(mapping), None, 0, false, true) {
++                    Ok(handle) => handle,
++                    Err(error) if error.errno() == libc::E2BIG => {
++                        // The paired kernel rejects over-budget spans BEFORE SCM/RM and
++                        // drops that unshared mapping. No live parcel is retried/reclaimed.
++                        if plan.split_refused().map_err(|_| Error::new(EINVAL))? {
++                            base::info!("GH-SHIM: retrying refused parcel {} with a smaller aligned range", i);
++                            continue;
++                        }
++                        return Err(error);
++                    }
++                    Err(error) => return Err(error),
++                };
+                 let parcel = abi::ShimParcel {
+                     handle,
+                     reserved: 0,
+@@ -1178,7 +1184,9 @@
+                 };
+                 mem.write_all_at_addr(bytes, dst)
+                     .map_err(|_| Error::new(EINVAL))?;
++                plan.accepted().map_err(|_| Error::new(EINVAL))?;
+             }
++            let nparcels = plan.count() as u64;
+             base::info!(
+                 "GH-SHIM: window {:#x}+{:#x} shared as {} parcel(s) in {:?}",
+                 window.guest_addr.offset(),

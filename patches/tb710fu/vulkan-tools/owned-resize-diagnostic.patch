@@ -1,0 +1,194 @@
+--- a/cube.c
++++ b/cube.c
+@@ -47,0 +48,4 @@
++#include <sys/socket.h>
++#include <unistd.h>
++#include <errno.h>
++#include <dlfcn.h>
+@@ -401,0 +406,76 @@
++#if defined(VK_USE_PLATFORM_WAYLAND_KHR)
++/* GB_OWNED_RESIZE_HELPERS_BEGIN
++ * Diagnostic only; preserves the upstream rendering/presentation path.
++ * The pure helpers are also compiled independently by the host bounds test. */
++struct gb_owned_resize_state {
++    unsigned request, configure_count, recreations, samples_emitted;
++    bool maximized_seen, restored_seen, maximized_recreated, restored_recreated, currently_maximized;
++    int32_t width, height, maximized_width, maximized_height;
++};
++static bool gb_owned_resize_enabled(void) {
++    const char *selection = getenv("GB_VKCUBE_OWNED_RESIZE_V1");
++    return selection && !strcmp(selection, "owned-maximize-v1");
++}
++static bool gb_owned_resize_extent(int32_t width, int32_t height) {
++    return width >= 32 && height >= 32 && width <= 3200 && height <= 2000 &&
++           (uint64_t)width * (uint64_t)height * 4 <= 33554432ULL;
++}
++static bool gb_owned_resize_configure(struct gb_owned_resize_state *s, int32_t width, int32_t height, bool maximized) {
++    if (width < 0 || height < 0 || s->configure_count >= 64) return false;
++    /* The compositor may leave unmaximized sizing to the client. */
++    if (!width) width = s->request == 2 && !maximized ? 640 : s->width;
++    if (!height) height = s->request == 2 && !maximized ? 480 : s->height;
++    if (!gb_owned_resize_extent(width, height)) return false;
++    s->width = width; s->height = height; s->configure_count++; s->currently_maximized = maximized;
++    if (s->request == 1 && maximized && (width != 640 || height != 480)) {
++        s->maximized_seen = true; s->maximized_width = width; s->maximized_height = height;
++    }
++    if (s->request == 2 && !maximized && width == 640 && height == 480) s->restored_seen = true;
++    return true;
++}
++static bool gb_owned_resize_recreated(struct gb_owned_resize_state *s, bool old_swapchain,
++                                      int32_t width, int32_t height, uint32_t images) {
++    if (!images || images > 4 || !gb_owned_resize_extent(width, height)) return false;
++    if (!old_swapchain) return true;
++    if (s->recreations >= 16) return false;
++    s->recreations++;
++    if (s->request == 1 && s->maximized_seen && width == s->maximized_width && height == s->maximized_height)
++        s->maximized_recreated = true;
++    if (s->request == 2 && s->restored_seen && width == 640 && height == 480) s->restored_recreated = true;
++    return true;
++}
++/* Return one-shot request, no action, or refusal. Configuration/recreation
++ * must complete before the next request, not merely before process exit. */
++static int gb_owned_resize_action(struct gb_owned_resize_state *s, int32_t frame) {
++    if (frame == 400) {
++        if (s->request) return -1;
++        s->request = 1; return 1;
++    }
++    if (frame == 800 && (!s->maximized_seen || !s->maximized_recreated)) return -1;
++    if (frame == 1400) {
++        if (s->request != 1 || !s->maximized_seen || !s->maximized_recreated) return -1;
++        s->request = 2; return 2;
++    }
++    if (frame == 1800 && (!s->restored_seen || !s->restored_recreated)) return -1;
++    return 0;
++}
++static bool gb_owned_resize_completed(const struct gb_owned_resize_state *s) {
++    return s->request == 2 && s->maximized_seen && s->restored_seen &&
++           s->maximized_recreated && s->restored_recreated;
++}
++/* Six one-shot observer markers; no sleeping, input or synchronization with
++ * the observer. A missing scheduled frame refuses rather than reusing a slot. */
++static int gb_owned_resize_sample(struct gb_owned_resize_state *s, int32_t frame) {
++    static const int32_t frames[6] = {100,250,900,1150,1900,2150};
++    if (s->samples_emitted >= 6) return -1;
++    if (frame < frames[s->samples_emitted]) return -1;
++    if (frame > frames[s->samples_emitted]) return -2;
++    return (int)s->samples_emitted++;
++}
++/* GB_OWNED_RESIZE_HELPERS_END */
++static void gb_owned_resize_refuse(const char *stage) {
++    printf("GB_OWNED_RESIZE:{\"schema_version\":1,\"status\":\"refused\",\"stage\":\"%s\",\"presentation_verified\":false}\n", stage);
++    fflush(stdout); exit(2);
++}
++#endif
++
+@@ -438,0 +519 @@
++    struct gb_owned_resize_state gb_owned_resize;
+@@ -1438,0 +1520,8 @@
++#if defined(VK_USE_PLATFORM_WAYLAND_KHR)
++    if (gb_owned_resize_enabled() &&
++        ((demo->format != VK_FORMAT_R8G8B8A8_UNORM && demo->format != VK_FORMAT_B8G8R8A8_UNORM) ||
++         !gb_owned_resize_extent((int32_t)swapchainExtent.width, (int32_t)swapchainExtent.height) ||
++         !desiredNumOfSwapchainImages || desiredNumOfSwapchainImages > 4))
++        gb_owned_resize_refuse("swapchain_extent_or_requested_image_budget");
++#endif
++
+@@ -1485,0 +1575,3 @@
++#if defined(VK_USE_PLATFORM_WAYLAND_KHR)
++    if (gb_owned_resize_enabled() && err != VK_SUCCESS) gb_owned_resize_refuse("create_swapchain_failed");
++#endif
+@@ -1496,0 +1589,3 @@
++#if defined(VK_USE_PLATFORM_WAYLAND_KHR)
++    if (gb_owned_resize_enabled() && err != VK_SUCCESS) gb_owned_resize_refuse("get_swapchain_image_count_failed");
++#endif
+@@ -1497,0 +1593,12 @@
++
++#if defined(VK_USE_PLATFORM_WAYLAND_KHR)
++    if (gb_owned_resize_enabled()) {
++        if (!gb_owned_resize_recreated(&demo->gb_owned_resize, oldSwapchain != VK_NULL_HANDLE,
++                (int32_t)swapchainExtent.width, (int32_t)swapchainExtent.height, demo->swapchainImageCount))
++            gb_owned_resize_refuse("actual_image_or_recreation_budget");
++        printf("GB_OWNED_RESIZE_CREATE:{\"frame\":%d,\"request\":%u,\"width\":%u,\"height\":%u,\"images\":%u,\"old_swapchain_supplied\":%s,\"recreations\":%u}\n",
++               demo->curFrame, demo->gb_owned_resize.request, swapchainExtent.width, swapchainExtent.height,
++               demo->swapchainImageCount, oldSwapchain != VK_NULL_HANDLE ? "true" : "false", demo->gb_owned_resize.recreations);
++        fflush(stdout);
++    }
++#endif
+@@ -1501,0 +1609,4 @@
++#if defined(VK_USE_PLATFORM_WAYLAND_KHR)
++    if (gb_owned_resize_enabled() && (err != VK_SUCCESS || !demo->swapchainImageCount || demo->swapchainImageCount > 4))
++        gb_owned_resize_refuse("get_swapchain_images_failed");
++#endif
+@@ -2972,0 +3084,24 @@
++            if (gb_owned_resize_enabled()) {
++                int action = gb_owned_resize_action(&demo->gb_owned_resize, demo->curFrame);
++                if (action < 0) gb_owned_resize_refuse("configure_or_recreation_frame_deadline");
++                if (action) {
++                    if (action == 1) xdg_toplevel_set_maximized(demo->xdg_toplevel);
++                    else xdg_toplevel_unset_maximized(demo->xdg_toplevel);
++                    printf("GB_OWNED_RESIZE_REQUEST:{\"frame\":%d,\"request\":%d,\"maximize\":%s}\n",
++                           demo->curFrame, action, action == 1 ? "true" : "false");
++                    fflush(stdout);
++                    if (wl_display_flush(demo->wayland_display) < 0 && errno != EAGAIN)
++                        gb_owned_resize_refuse("request_flush");
++                }
++                int sample = gb_owned_resize_sample(&demo->gb_owned_resize, demo->curFrame);
++                if (sample < -1) gb_owned_resize_refuse("missed_sample_frame");
++                if (sample >= 0) {
++                    const struct gb_owned_resize_state *s = &demo->gb_owned_resize;
++                    printf("GB_OWNED_RESIZE_SAMPLE:{\"sample_index\":%d,\"phase\":%d,\"frame\":%d,\"request\":%u,\"width\":%d,\"height\":%d,\"maximized\":%s,\"maximized_observed\":%s,\"restored_observed\":%s,\"maximized_recreated\":%s,\"restored_recreated\":%s,\"recreations\":%u,\"presentation_verified\":false}\n",
++                           sample, sample / 2, demo->curFrame, s->request, demo->width, demo->height,
++                           s->currently_maximized ? "true" : "false", s->maximized_seen ? "true" : "false",
++                           s->restored_seen ? "true" : "false", s->maximized_recreated ? "true" : "false",
++                           s->restored_recreated ? "true" : "false", s->recreations);
++                    fflush(stdout);
++                }
++            }
+@@ -2974,0 +3110,6 @@
++    }
++    if (gb_owned_resize_enabled()) {
++        if (!gb_owned_resize_completed(&demo->gb_owned_resize) || demo->gb_owned_resize.samples_emitted != 6)
++            gb_owned_resize_refuse("incomplete_resize_sequence_or_samples");
++        puts("GB_OWNED_RESIZE_COMPLETED:{\"schema_version\":1,\"status\":\"observed_configure_and_recreation\",\"requests\":2,\"presentation_verified\":false,\"explicit_present_retirement_verified\":false}");
++        fflush(stdout);
+@@ -2991,0 +3133,14 @@
++    if (gb_owned_resize_enabled()) {
++        bool maximized = false;
++        uint32_t *state;
++        if (states->size % sizeof(uint32_t) || states->size > 64 * sizeof(uint32_t))
++            gb_owned_resize_refuse("configure_state_array_budget");
++        wl_array_for_each(state, states) if (*state == XDG_TOPLEVEL_STATE_MAXIMIZED) maximized = true;
++        if (!gb_owned_resize_configure(&demo->gb_owned_resize, width, height, maximized))
++            gb_owned_resize_refuse("configure_extent_or_event_budget");
++        demo->width = demo->gb_owned_resize.width; demo->height = demo->gb_owned_resize.height;
++        printf("GB_OWNED_RESIZE_CONFIGURE:{\"frame\":%d,\"request\":%u,\"raw_width\":%d,\"raw_height\":%d,\"width\":%d,\"height\":%d,\"maximized\":%s,\"configure_count\":%u}\n",
++               demo->curFrame, demo->gb_owned_resize.request, width, height, demo->width, demo->height,
++               maximized ? "true" : "false", demo->gb_owned_resize.configure_count);
++        fflush(stdout); return;
++    }
+@@ -3593 +3748 @@
+-    } else if (strcmp(interface, wl_seat_interface.name) == 0) {
++    } else if (strcmp(interface, wl_seat_interface.name) == 0 && !gb_owned_resize_enabled()) {
+@@ -3656,0 +3812,13 @@
++    if (gb_owned_resize_enabled()) {
++        const char *pid_text = getenv("GB_OWNED_COMPOSITOR_PID");
++        const char *display = getenv("WAYLAND_DISPLAY");
++        if (!pid_text || !display || (strcmp(display,"wayland-0") && strcmp(display,"wayland-1") && strcmp(display,"wayland-2")) ||
++            getenv("WAYLAND_SOCKET") || getuid() != 1000) gb_owned_resize_refuse("owned_wayland_identity");
++        char *end = NULL; errno = 0;
++        long pid = strtol(pid_text, &end, 10);
++        if (errno || !end || *end || pid < 2 || pid > 4194304) gb_owned_resize_refuse("owned_compositor_pid");
++        int (*get_fd)(struct wl_display *) = (int (*)(struct wl_display *))dlsym(demo->wayland_library,"wl_display_get_fd");
++        struct ucred peer; socklen_t bytes = sizeof(peer);
++        if (!get_fd || getsockopt(get_fd(demo->wayland_display),SOL_SOCKET,SO_PEERCRED,&peer,&bytes) ||
++            bytes != sizeof(peer) || peer.pid != pid || peer.uid != getuid()) gb_owned_resize_refuse("owned_compositor_peer");
++    }
+@@ -4826,0 +4995,8 @@
++#if defined(VK_USE_PLATFORM_WAYLAND_KHR)
++    if (gb_owned_resize_enabled()) {
++        if (demo->wsi_platform != WSI_PLATFORM_WAYLAND || demo->width != 640 || demo->height != 480 ||
++            demo->frameCount < 2200 || demo->frameCount > 2400) gb_owned_resize_refuse("explicit_wayland_and_bounded_run_required");
++        demo->gb_owned_resize.width = 640; demo->gb_owned_resize.height = 480;
++        alarm(90);
++    }
++#endif

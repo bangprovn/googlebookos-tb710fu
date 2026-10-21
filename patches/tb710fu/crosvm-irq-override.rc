@@ -1,0 +1,15 @@
+# Owner-authorized development override, opt-in for one boot only. The source
+# remains on AVB-protected system_ext. Original APEX contents are preserved.
+# Host must first stop Terminal and verify that no VM is running. A trigger is
+# a request, not proof: verify mountinfo and the guest DTB before using results.
+on property:debug.gb.crosvm_irq_override=1
+    setprop debug.gb.crosvm_irq_override 0
+    enter_default_mount_ns
+    mount none /system_ext/gb-virt-bin-irq-v1 /apex/com.android.virt/bin bind
+
+# Remove only this bin-directory mount while no VMs are running. Reboot also
+# removes the override; it is never automatically enabled at boot.
+on property:debug.gb.crosvm_irq_override=2
+    setprop debug.gb.crosvm_irq_override 0
+    enter_default_mount_ns
+    umount /apex/com.android.virt/bin

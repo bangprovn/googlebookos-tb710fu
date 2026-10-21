@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "scope": "Process-only native WSI coherent memory selection diagnostic; no pixel copy",
+  "source_version": "25.0.7-2+deb13u1",
+  "base_file": "src/vulkan/wsi/wsi_common_drm.c",
+  "base_sha256": "c47c7deacf859c461e58881149af384611fb56eb4304339fdef39e73923afe35",
+  "result_sha256": "472b8366e1813cdb8cf1e3bffcaa89d8ff8d6d90f87a9d4893e7779c97080c5e",
+  "patch_sha256": "33c3253858180663e6a78d5db9dd914c6641e886b87ca9fc61cca41ca9f321a0",
+  "opt_in": {
+    "GB_VENUS_WSI_MEMORY_V1": "coherent"
+  },
+  "required_memory_flags": [
+    "HOST_VISIBLE",
+    "HOST_COHERENT"
+  ],
+  "memory_type_bits_respected": true,
+  "missing_type_is_error": true,
+  "native_pixel_copy_added": false,
+  "installed": false,
+  "runtime_executed": true,
+  "presentation_verified": false,
+  "status": "allocation_metadata_observed_selection_was_noop_native_presentation_failed",
+  "license": "MIT; original complete source notice retained",
+  "build_verified": true,
+  "candidate_sha256": "0e483ea36298f6d1d69664ec249682a20ab7239c0dc4dfbfb8ef122fc8a200e2",
+  "incremental_build_seconds": 2.238,
+  "default_memory_type": 0,
+  "selected_memory_type": 0,
+  "default_memory_flags": 7,
+  "selected_memory_flags": 7,
+  "actual_stride": 2560,
+  "actual_offset": 0,
+  "published_offset": 0,
+  "allocation_bytes": 1228800,
+  "window_frames": 2400,
+  "window_exit_code": 0,
+  "runtime_report": "docs/tb710fu-present-sync-20261020.json"
+}

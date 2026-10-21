@@ -1,0 +1,9 @@
+; Named io_uring pin handles for two explicit VMM domains; no SQPOLL or credential override.
+(type gb_shell_crosvm_pinring)
+(roletype object_r gb_shell_crosvm_pinring)
+(typetransition shell_virtmgr_crosvm shell_virtmgr_crosvm anon_inode "[io_uring]" gb_shell_crosvm_pinring)
+(allow shell_virtmgr_crosvm gb_shell_crosvm_pinring (anon_inode (create)))
+(type gb_crosvm_pinring)
+(roletype object_r gb_crosvm_pinring)
+(typetransition priv_app_all_virtmgr_crosvm priv_app_all_virtmgr_crosvm anon_inode "[io_uring]" gb_crosvm_pinring)
+(allow priv_app_all_virtmgr_crosvm gb_crosvm_pinring (anon_inode (create)))

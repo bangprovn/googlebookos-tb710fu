@@ -1,0 +1,26 @@
+# A disabled service first started after APEX activation runs in init's default
+# mount namespace. Unlike enter_default_mount_ns in PID 1, setns happens in a
+# forked single-threaded child. No automatic boot trigger or shell execution.
+on property:debug.gb.terminal_mount=1
+    setprop debug.gb.terminal_mount 0
+    exec_start gb-terminal-mount-on
+
+on property:debug.gb.terminal_mount=2
+    setprop debug.gb.terminal_mount 0
+    exec_start gb-terminal-mount-off
+
+service gb-terminal-mount-on /system_ext/bin/gb-terminal-mount enable
+    user root
+    group root
+    capabilities SYS_ADMIN
+    disabled
+    oneshot
+    timeout_period 15
+
+service gb-terminal-mount-off /system_ext/bin/gb-terminal-mount disable
+    user root
+    group root
+    capabilities SYS_ADMIN
+    disabled
+    oneshot
+    timeout_period 15

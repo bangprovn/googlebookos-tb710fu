@@ -1,0 +1,61 @@
+{
+  "actual_injection_verified": false,
+  "apk_repackaged": false,
+  "browser_equivalence_verified": false,
+  "built": false,
+  "candidate_behavior": [
+    "Capture native onmessage prototype accessor and forward successful assignments through native setter.",
+    "Getter returns assigned user function while native slot holds its sanitizer wrapper; native bypass assignments are reflected.",
+    "Replace/null/noncallable assignments preserve native setter semantics; exception does not publish new local handler identity.",
+    "Existing addEventListener and OSC sanitizer unchanged. Missing native accessor leaves normal property semantics rather than installing a broken replacement."
+  ],
+  "deployment_ready": false,
+  "donor": "mica",
+  "donor_apk_sha256": "8bbea541e6f45f8cf530eb78d9b50830113458a6e4220a5e4de9966d0fae5372",
+  "files": [
+    {
+      "fixture_path": "tests/fixtures/terminal_websocket_interceptor.js",
+      "path": "assets/js/websocket_interceptor.js",
+      "result_sha256": "265ed6763de4a854d0fbaaea7cbcfac9850ad191050491f1843de4205274528d",
+      "sha256": "880df2a09c1f7a82ad9d0e00d660a3e32453dc7e2d3bb27e9ad5504565988e4a"
+    }
+  ],
+  "installed": false,
+  "installed_frontend_assignment_verified": false,
+  "license": {
+    "license_file": "LICENSE",
+    "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "scope": "Extracted AOSP JavaScript asset and derivative patch only; no Google APK redistribution authorization asserted.",
+    "spdx": "Apache-2.0"
+  },
+  "limitations": [
+    "Host native-like setter/EventTarget proof is conditional source evidence, not actual WebView/frontend equivalence.",
+    "Runtime console_type may select raw virtio-console ConsoleView, which has no ttyd ChromeClient path.",
+    "Document-start injection and active guest ttyd assignment style remain unverified.",
+    "No replay or fresh input is authorized by this candidate; both existing ambiguous tabs are preserved.",
+    "No Google APK replacement/resign or signing/platform-permission strategy is supplied."
+  ],
+  "patch_sha256": "5912ca3dcaa2b9be6de0282e8aa217b59bd1ceb50aa653bcefc74c682fc6051d",
+  "revision": 1,
+  "runtime_verified": false,
+  "schema_version": 1,
+  "scope": "Donor Terminal WebSocket onmessage native-handler registration; source-only unbuilt candidate",
+  "source_applicable": true,
+  "source_provenance": "Exact saved installed-matched donor APK8bbe asset880d. Original2026 Android Open Source Project Apache-2.0 header retained in fixture and result.",
+  "tests": {
+    "driver": "tests/terminal_websocket_onmessage.py",
+    "driver_sha256": "9cdb1edb06f0efc4ed134fa17adbf2058af9c327760a5d2c033287d2ac0799af",
+    "execution": "Actual source runs only in offline read-only unprivileged Docker with trusted host Node/libs mounted read-only. Missing prerequisites skips; no unsandboxed fallback.",
+    "expected_actual_source_scenarios": 9,
+    "image": "sha256:a3a951af78a89cb1a771c97cc70c7573663f751a444d728ed9048c1f20ab40c5",
+    "mock": "tests/fixtures/terminal_websocket_onmessage_mock.js",
+    "mock_sha256": "7f4d858b14db782d36446cc4f2a1b19ed09ec45d65cc87610d9bd9d35834f851",
+    "results": {
+      "actual_source_scenarios_passed": 9,
+      "device_actions": false,
+      "host_tests_passed": 2,
+      "zero_fuzz_apply_and_reverse": true
+    },
+    "verified": true
+  }
+}

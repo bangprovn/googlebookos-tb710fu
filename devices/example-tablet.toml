@@ -1,0 +1,20 @@
+schema_version = 1
+external_prerequisites = ["Provide stock firmware before building"]
+[device]
+codename = "example_tablet"
+manufacturer = { status = "unknown" }
+architecture = { status = "assumption", value = "aarch64" }
+soc_vendor = { status = "assumption", value = "mediatek" }
+soc_model = { status = "unknown" }
+base_android = { status = "assumption", value = 17 }
+[firmware]
+input = "../artifacts/inputs/example-stock"
+completeness = "partition_subset"
+preserve_partitions = ["boot", "vendor_boot", "vendor", "odm", "dtbo"]
+[boot]
+bootloader_locked = { status = "unknown" }
+strategy = { status = "unknown" }
+test_key_acceptance = { status = "unknown" }
+rollback_requirement = { status = "unknown" }
+[features]
+touchscreen = { status = "unknown" }

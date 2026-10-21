@@ -1,0 +1,23 @@
+# Owner-requested, bounded VM bring-up diagnostics. Nothing launches a VM.
+# Authenticated ADB shell may set debug.*; init starts only this logger.
+# A repeat request while the oneshot service runs does not extend its deadline.
+on property:debug.gb.vm_capture=1
+    setprop debug.gb.vm_capture 0
+    start gb-vm-logger
+
+# Experimental, explicit opt-in for a native protected-Microdroid probe only.
+# The retained pvmfw contains the AOSP RSA4096 guest key; actual guest boot is
+# unverified. Do not set this on boot or treat it as attestation evidence.
+# ro.* is write-once: an existing value is never overwritten. Reboot clears
+# this opt-in on the current target, whose stock property is absent.
+on property:debug.gb.vm_probe_protected=1
+    setprop debug.gb.vm_probe_protected 0
+    setprop ro.boot.hypervisor.protected_vm.supported 1
+
+service gb-vm-logger /system_ext/bin/gb-boot-logger --vm-service
+    class core
+    user root
+    group root log readproc
+    capabilities SYSLOG
+    disabled
+    oneshot

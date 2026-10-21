@@ -1,0 +1,11 @@
+--- a/devices/src/virtio/virtio_pci_device.rs
++++ b/devices/src/virtio/virtio_pci_device.rs
+@@ -1568 +1568 @@
+-        let id = self.mappings.remove(&offset).context("invalid offset")?;
++        let id = self.mappings.get(&offset).copied().context("invalid offset")?;
+@@ -1571 +1571,4 @@
+-            .context("unregister_memory failed")
++            .context("unregister_memory failed")?;
++        // Failed unregister retains the registered mapping for a caller retry.
++        self.mappings.remove(&offset);
++        Ok(())

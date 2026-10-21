@@ -1,0 +1,146 @@
+--- a/src/vulkan/wsi/wsi_common_wayland.c
++++ b/src/vulkan/wsi/wsi_common_wayland.c
+@@ -131,0 +132,2 @@
++   dev_t gb_feedback_target_device;
++   uint8_t gb_pending_linear_formats, gb_default_linear_formats;
+@@ -786,0 +789,13 @@
++/* Four independently qualified explicit LINEAR RGB(A/X) formats only. */
++static uint8_t
++gb_wl_linear_format_bit(uint32_t format)
++{
++   switch (format) {
++   case DRM_FORMAT_ARGB8888: return 1u << 0;
++   case DRM_FORMAT_XRGB8888: return 1u << 1;
++   case DRM_FORMAT_ABGR8888: return 1u << 2;
++   case DRM_FORMAT_XBGR8888: return 1u << 3;
++   default: return 0;
++   }
++}
++
+@@ -808,0 +824,4 @@
++   display->gb_feedback_target_device = 0;
++   display->gb_pending_linear_formats = 0;
++   /* Invalidate the committed proof before exposing a new device/generation. */
++   display->gb_default_linear_formats = 0;
+@@ -816 +835,4 @@
+-   /* ignore this event */
++   struct wsi_wl_display *display = data;
++   display->gb_feedback_target_device = 0;
++   if (device->size == sizeof(dev_t))
++      memcpy(&display->gb_feedback_target_device, device->data, sizeof(dev_t));
+@@ -845,0 +868,4 @@
++      if (display->main_device != 0 &&
++          display->gb_feedback_target_device == display->main_device &&
++          modifier == DRM_FORMAT_MOD_LINEAR)
++         display->gb_pending_linear_formats |= gb_wl_linear_format_bit(format);
+@@ -862 +888,2 @@
+-   /* ignore this event */
++   struct wsi_wl_display *display = data;
++   display->gb_default_linear_formats = display->gb_pending_linear_formats;
+@@ -1548,0 +1576,70 @@
++/* GB_WL_EXPLICIT_FEEDBACK_V1_BEGIN
++ * Process-only qualification for the pinned Android LINEAR image bridge.
++ * INVALID remains implicit, never an alias for LINEAR. Allocation and feedback
++ * comparison must use the same effective modifier set.
++ */
++static bool
++gb_wl_explicit_feedback_enabled(void)
++{
++   const char *value = getenv("GB_WSI_EXPLICIT_FEEDBACK_V1");
++   return value && !strcmp(value, "qualified-linear-rgbx-v1");
++}
++
++static bool
++gb_wl_feedback_device_matches(struct wsi_wl_display *display, dev_t device)
++{
++   const struct wsi_device *wsi = display->wsi_wl->wsi;
++   return device != 0 &&
++      ((wsi->drm_info.hasRender &&
++        major(device) == wsi->drm_info.renderMajor &&
++        minor(device) == wsi->drm_info.renderMinor) ||
++       (wsi->drm_info.hasPrimary &&
++        major(device) == wsi->drm_info.primaryMajor &&
++        minor(device) == wsi->drm_info.primaryMinor));
++}
++
++static bool
++gb_wl_explicit_feedback_modifiers(struct wsi_wl_surface *surface,
++                                   VkFormat format, bool alpha,
++                                   uint32_t *count, const uint64_t **modifiers)
++{
++   static const uint64_t linear = DRM_FORMAT_MOD_LINEAR;
++   struct wsi_wl_display *display = surface->display;
++   const uint32_t flag = alpha ? WSI_WL_FMT_ALPHA : WSI_WL_FMT_OPAQUE;
++   *count = 0;
++   *modifiers = NULL;
++   if (!gb_wl_explicit_feedback_enabled() || display->sw || !display->wl_dmabuf ||
++       !display->wsi_wl->wsi->supports_modifiers || !display->same_gpu ||
++       (format != VK_FORMAT_R8G8B8A8_UNORM &&
++        format != VK_FORMAT_B8G8R8A8_UNORM) ||
++       !gb_wl_feedback_device_matches(display, display->main_device))
++      return false;
++
++   /* The initial surface feedback can still be pending. In that case only
++    * the completed, device-qualified default feedback can supply LINEAR. */
++   if (surface->dmabuf_feedback.main_device != 0 &&
++       surface->dmabuf_feedback.main_device != display->main_device)
++      return false;
++
++   /* Surface vectors merge alpha/opaque raw formats under one VkFormat. They
++    * cannot prove that the requested raw fourcc has explicit LINEAR support.
++    * All qualified selections therefore require completed, same-device default
++    * raw-fourcc evidence and select only LINEAR, regardless of that preference.
++    * Never manufacture support from INVALID or choose another modifier. */
++   struct wsi_wl_format *f = find_format(&display->formats, format);
++   const uint8_t bit = gb_wl_linear_format_bit(
++      wl_drm_format_for_vk_format(format, alpha));
++   if (f && (f->flags & flag) && (display->gb_default_linear_formats & bit)) {
++      uint64_t *modifier;
++      u_vector_foreach(modifier, &f->modifiers) {
++         if (*modifier == DRM_FORMAT_MOD_LINEAR) {
++            *count = 1;
++            *modifiers = &linear;
++            return true;
++         }
++      }
++   }
++   return false;
++}
++/* GB_WL_EXPLICIT_FEEDBACK_V1_END */
++
+@@ -1694,0 +1792,14 @@
++   if (gb_wl_explicit_feedback_enabled()) {
++      uint32_t count;
++      const uint64_t *modifiers;
++      const bool alpha = chain->drm_format ==
++         wl_drm_format_for_vk_format(chain->vk_format, true);
++      if (!gb_wl_explicit_feedback_modifiers(wsi_wl_surface, chain->vk_format,
++                                             alpha, &count, &modifiers) ||
++          !sets_of_modifiers_are_the_same(count, modifiers,
++                                          chain->num_drm_modifiers,
++                                          chain->drm_modifiers))
++         chain->suboptimal = true;
++      return;
++   }
++
+@@ -2987,0 +3099,4 @@
++   if (gb_wl_explicit_feedback_enabled() && wsi_device->sw) {
++      result = VK_ERROR_FORMAT_NOT_SUPPORTED;
++      goto fail;
++   }
+@@ -3009 +3124,14 @@
+-      if (wsi_wl_surface->display->wl_dmabuf && wsi_device->supports_modifiers) {
++      if (gb_wl_explicit_feedback_enabled()) {
++         const bool alpha = pCreateInfo->compositeAlpha ==
++                            VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR;
++         if (!gb_wl_explicit_feedback_modifiers(wsi_wl_surface,
++                                                pCreateInfo->imageFormat, alpha,
++                                                &num_drm_modifiers,
++                                                &drm_modifiers)) {
++            result = VK_ERROR_FORMAT_NOT_SUPPORTED;
++            goto fail;
++         }
++         drm_image_params.num_modifier_lists = 1;
++         drm_image_params.num_modifiers = &num_drm_modifiers;
++         drm_image_params.modifiers = &drm_modifiers;
++      } else if (wsi_wl_surface->display->wl_dmabuf && wsi_device->supports_modifiers) {

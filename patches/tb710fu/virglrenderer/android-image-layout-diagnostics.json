@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "revision": "718f00f8b0483112f804925cf51576a8cade8046",
+  "base_patch": "android-image-bridge.json",
+  "patch_sha256": "51cc55c549a98837ef543d115a6d6d872656d385e0ad60f1b8c13c92da47fa28",
+  "files": [
+    {
+      "path": "src/gb_android_image_bridge.h",
+      "sha256": "c206912d64996bc63211bfee6ee5cff3dde8a3b175f182f48dae8250bf6cce2e",
+      "result_sha256": "65301d86028a5c8dd40fcb711c67c209f216970e7fd3b70e9a666cc3e041e889"
+    }
+  ],
+  "scope": "Diagnostic numeric fields and refusal mask at the actual incoming image boundary; preserve admission limits and no CPU frame copy",
+  "metadata_budget_shared_records": 32,
+  "fields": [
+    "width",
+    "height",
+    "fourcc",
+    "modifier",
+    "planes",
+    "stride",
+    "offset",
+    "bytes",
+    "seek_errno",
+    "reset",
+    "reset_errno",
+    "refused"
+  ],
+  "refusal_bits": {
+    "extent": 1,
+    "planes": 2,
+    "modifier": 4,
+    "format": 8,
+    "pitch": 16,
+    "bytes": 32,
+    "range": 64,
+    "seek": 128
+  },
+  "conditions": {
+    "donor_fingerprint": "Dell/mica/mica:17/CL3B.260622.273.R1/16471258:user/release-keys",
+    "vendor_fingerprint": "Lenovo/TB710FU/TB710FU:16/BP2A.250605.031.A3/ZUI_17.5.04.059_260327_ROW:user/release-keys",
+    "activation": "GB_ANDROID_IMAGE_BRIDGE_V1=diagnostic-linear-v1"
+  },
+  "installed": true,
+  "runtime_verified": true,
+  "runtime_scope": "Fixed numeric layout fields only; actual image GPU copy/sampling remain unverified",
+  "runtime_report": "docs/tb710fu-guest-image-layout-20261020.json"
+}

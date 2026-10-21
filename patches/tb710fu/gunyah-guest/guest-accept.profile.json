@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "kernel_release": "6.12.93-android16-6-g3a7d1771d492-ab16496487-4k",
+  "kernel_config_sha256": "edff4689d8c1721dcd9d10b2dcac409ecae5ab56f1d8964e3b8e52b1088530bd",
+  "module_path": "/usr/local/lib/googlebook-port/guest-accept-2c72b99ab59bd6d0/gunyah_guest.ko",
+  "module_sha256": "2c72b99ab59bd6d099bdc7af351565c370abb392c2fa6e8d86262edd43482769"
+}

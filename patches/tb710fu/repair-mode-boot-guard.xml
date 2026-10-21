@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- TB710FU adapter: Google manufacturing-trigger detection requires the
+     donor vendor serviceability, VPD executor and GSC/AP-RO backend.
+     This target has no validated implementation of that dependency chain.
+     Preserve the signed app and manual components; skip only automatic boot
+     detection until a real backend and recovery flow have been validated.
+     This does not implement or certify factory Repair Mode. -->
+<permissions>
+    <component-override package="com.google.android.desktop.repairmode">
+        <component class="com.google.android.desktop.repairmode.receiver.BootCompletedReceiver"
+                   enabled="false" />
+    </component-override>
+</permissions>

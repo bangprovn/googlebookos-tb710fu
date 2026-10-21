@@ -1,0 +1,168 @@
+--- a/drivers/virt/gunyah/vm_mgr.c
++++ b/drivers/virt/gunyah/vm_mgr.c
+@@ -193,6 +193,8 @@
+ 	mutex_lock(&ghvm->resources_lock);
+ 	list_for_each_entry(iter, &ghvm->resource_tickets, vm_list) {
+ 		if (iter->resource_type == ticket->resource_type && iter->label == ticket->label) {
++			pr_warn_ratelimited("gb-irqfd-diag-v1: duplicate resource type=%u label=%u\n",
++				ticket->resource_type, ticket->label);
+ 			ret = -EEXIST;
+ 			goto out;
+ 		}
+@@ -504,6 +506,10 @@
+ 	ghvm->vmid = ret;
+ 	ghvm->vm_status = GH_RM_VM_STATUS_LOAD;
+ 
++	ret = gh_vm_mem_fixup_pci_ranges(ghvm);
++	if (ret)
++		goto err;
++
+ 	mutex_lock(&ghvm->mm_lock);
+ 	list_for_each_entry(mapping, &ghvm->memory_mappings, list) {
+ 		mapping->parcel.acl_entries[0].vmid = cpu_to_le16(ghvm->vmid);
+--- a/drivers/virt/gunyah/vm_mgr.h
++++ b/drivers/virt/gunyah/vm_mgr.h
+@@ -62,6 +62,7 @@
+ 	struct rw_semaphore mmio_handler_lock;
+ };
+ 
++int gh_vm_mem_fixup_pci_ranges(struct gh_vm *ghvm);
+ int gh_vm_mem_alloc(struct gh_vm *ghvm, struct gh_userspace_memory_region *region, bool lend);
+ void gh_vm_mem_reclaim(struct gh_vm *ghvm);
+ struct gh_vm_mem *gh_vm_mem_find_by_addr(struct gh_vm *ghvm, u64 guest_phys_addr, u32 size);
+--- a/drivers/virt/gunyah/vm_mgr_mm.c
++++ b/drivers/virt/gunyah/vm_mgr_mm.c
+@@ -7,10 +7,77 @@
+ 
+ #include <linux/gunyah_rsc_mgr.h>
+ #include <linux/mm.h>
++#include <linux/libfdt.h>
++#include <linux/vmalloc.h>
++#include <asm/cacheflush.h>
++
++#include "gb-pci-compat.h"
+ 
+ #include <uapi/linux/gunyah.h>
+ 
+ #include "vm_mgr.h"
++
++/* Normalize only the known Android pVM PCI window before any memory is lent.
++ * No guest payload, authentication, firmware partition or runtime key changes.
++ * Parse a bounded private snapshot; never parse guest-writable memory in place.
++ */
++int gh_vm_mem_fixup_pci_ranges(struct gh_vm *ghvm)
++{
++	struct gh_vm_mem *mapping;
++	void *mapped = NULL, *copy = NULL;
++	u64 start = ghvm->dtb_config.guest_phys_addr, offset, capacity;
++	size_t bytes = ghvm->dtb_config.size, skew, count, first;
++	int ret = -EINVAL;
++	size_t i;
++
++	if (ghvm->auth != GH_RM_VM_AUTH_QCOM_ANDROID_PVM)
++		return 0;
++	if (!bytes || bytes > 2 * 1024 * 1024)
++		return -EINVAL;
++
++	mutex_lock(&ghvm->mm_lock);
++	list_for_each_entry(mapping, &ghvm->memory_mappings, list) {
++		capacity = (u64)mapping->npages << PAGE_SHIFT;
++		if (start < mapping->guest_phys_addr)
++			continue;
++		offset = start - mapping->guest_phys_addr;
++		if (offset >= capacity || bytes > capacity - offset)
++			continue;
++		if (!mapping->pages || !mapping->parcel.n_acl_entries ||
++		    !(mapping->parcel.acl_entries[0].perms & GH_RM_ACL_W)) {
++			ret = -EACCES;
++			break;
++		}
++		first = offset >> PAGE_SHIFT;
++		skew = offset & (PAGE_SIZE - 1);
++		count = DIV_ROUND_UP(skew + bytes, PAGE_SIZE);
++		mapped = vmap(mapping->pages + first, count, VM_MAP, PAGE_KERNEL);
++		if (!mapped) {
++			ret = -ENOMEM;
++			break;
++		}
++		copy = kvmalloc(bytes, GFP_KERNEL);
++		if (!copy) {
++			ret = -ENOMEM;
++			break;
++		}
++		memcpy(copy, mapped + skew, bytes);
++		ret = gb_gunyah_normalize_pci_dtb(copy, bytes);
++		if (ret == 1) {
++			memcpy(mapped + skew, copy, bytes);
++			for (i = 0; i < count; i++)
++				flush_dcache_page(mapping->pages[first + i]);
++			pr_info("gb-pci-compat-v1: normalized known Android pVM PCI range type\n");
++			ret = 0;
++		}
++		break;
++	}
++	kvfree(copy);
++	if (mapped)
++		vunmap(mapped);
++	mutex_unlock(&ghvm->mm_lock);
++	return ret;
++}
+ 
+ static bool pages_are_mergeable(struct page *a, struct page *b)
+ {
+--- /dev/null
++++ b/drivers/virt/gunyah/gb-pci-compat.h
+@@ -0,0 +1,53 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Device-scoped compatibility for the retained TB710FU Android pVM firmware.
++ * Include libfdt and errno/string declarations before this pure transformer.
++ * Return 1 when changed, 0 for another/already-normalized layout, or -EINVAL.
++ */
++#ifndef GB_GUNYAH_PCI_COMPAT_H
++#define GB_GUNYAH_PCI_COMPAT_H
++
++static inline int gb_gunyah_normalize_pci_dtb(void *blob, size_t available)
++{
++	const fdt32_t *ranges, *cells;
++	fdt32_t replacement[14];
++	int pci, len;
++
++	if (available < sizeof(struct fdt_header) || fdt_check_header(blob) ||
++	    fdt_version(blob) != 17 || fdt_totalsize(blob) > available)
++		return -EINVAL;
++	pci = fdt_path_offset(blob, "/pci");
++	if (pci < 0 || fdt_node_check_compatible(blob, pci, "pci-host-cam-generic"))
++		return 0;
++	cells = fdt_getprop(blob, 0, "#address-cells", &len);
++	if (!cells || len != 4 || fdt32_to_cpu(*cells) != 2)
++		return 0;
++	cells = fdt_getprop(blob, pci, "#address-cells", &len);
++	if (!cells || len != 4 || fdt32_to_cpu(*cells) != 3)
++		return 0;
++	cells = fdt_getprop(blob, pci, "#size-cells", &len);
++	if (!cells || len != 4 || fdt32_to_cpu(*cells) != 2)
++		return 0;
++	ranges = fdt_getprop(blob, pci, "ranges", &len);
++	if (!ranges || len != sizeof(replacement) ||
++	    fdt32_to_cpu(ranges[0]) != 0x02000000 ||
++	    fdt32_to_cpu(ranges[1]) != 0 ||
++	    fdt32_to_cpu(ranges[2]) != 0x2c000000 ||
++	    fdt32_to_cpu(ranges[3]) != 0 ||
++	    fdt32_to_cpu(ranges[4]) != 0x2c000000 ||
++	    fdt32_to_cpu(ranges[5]) != 0 ||
++	    fdt32_to_cpu(ranges[6]) != 0x02000000 ||
++	    (fdt32_to_cpu(ranges[7]) & 0x03000000) != 0x03000000)
++		return 0;
++
++	/* A 64-bit PCI memory window can reside below 4 GiB. Preserve every
++	 * address, size, prefetch flag, interrupt and unrelated byte. The retained
++	 * pvmfw still validates the tree and verifies kernel/ramdisk signatures.
++	 */
++	memcpy(replacement, ranges, sizeof(replacement));
++	replacement[0] = cpu_to_fdt32(0x03000000);
++	if (fdt_setprop_inplace(blob, pci, "ranges", replacement, sizeof(replacement)))
++		return -EINVAL;
++	return 1;
++}
++
++#endif

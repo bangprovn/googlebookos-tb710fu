@@ -1,0 +1,24 @@
+# Explicit owner diagnostics only; no boot trigger or memory reservation.
+# Record both current policies and restore each after the experiment.
+on property:debug.gb.vm_shmem_policy=advise
+    setprop debug.gb.vm_shmem_policy 0
+    write /sys/kernel/mm/transparent_hugepage/shmem_enabled advise
+
+# Original Terminal currently disables its explicit huge-page request. This
+# opt-in mode also permits full-size shmem mappings without that request.
+on property:debug.gb.vm_shmem_policy=within_size
+    setprop debug.gb.vm_shmem_policy 0
+    write /sys/kernel/mm/transparent_hugepage/shmem_enabled within_size
+
+on property:debug.gb.vm_shmem_policy=never
+    setprop debug.gb.vm_shmem_policy 0
+    write /sys/kernel/mm/transparent_hugepage/shmem_enabled never
+
+# Reclaim/compaction only for explicitly MADV_HUGEPAGE-advised mappings.
+on property:debug.gb.vm_thp_defrag=madvise
+    setprop debug.gb.vm_thp_defrag 0
+    write /sys/kernel/mm/transparent_hugepage/defrag madvise
+
+on property:debug.gb.vm_thp_defrag=never
+    setprop debug.gb.vm_thp_defrag 0
+    write /sys/kernel/mm/transparent_hugepage/defrag never

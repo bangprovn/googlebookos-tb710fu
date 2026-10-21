@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "revision": 1,
+  "base_patch": "android-image-swapchain-budget.json",
+  "base_file": "src/gb_android_image_bridge.h",
+  "base_sha256": "2ae81b3bce46748cd9376d4d22e7432b68f41a87721b330f4513e9b08a2e2611",
+  "result_sha256": "518c7f0c77f76608c74d60a4ef32aed574cb92198423994e2fba1020e3448833",
+  "patch_sha256": "c62edf416aa469e2ec117a301c99e8d1ced3cc07eef26c91b7349c291339a378",
+  "scope": "Retain complete deferred bridge objects in a fixed registry and opportunistically reclaim only fences reporting VK_SUCCESS",
+  "maximum_active_quarantined_or_reaping_images": 8,
+  "source_and_destination_per_image_limit_bytes": 33554432,
+  "quota_increased": false,
+  "implicit_modifier_acceptance_changed": false,
+  "background_thread_created": false,
+  "maximum_fence_queries_per_pass": 8,
+  "gpu_wait_in_reaper": false,
+  "only_reap_status": "VK_SUCCESS",
+  "registry_ownership": "ACTIVE -> REAPING -> FREE, or ACTIVE -> REAPING -> QUARANTINED -> REAPING -> FREE; slots remain charged through native teardown; allocation reservations also charge existing atomic quota",
+  "caller_contract": "Existing single GL-owner thread and resource-reference ownership must serialize ACTIVE refresh/destruction. Destroy relinquishes the pointer once; callers never retry a deferred pointer. Only registry-owned QUARANTINED entries are polled.",
+  "call_serialization_evidence": [
+    "external/crosvm/rutabaga_gfx/src/rutabaga_core.rs: RutabagaResource documents a single-threaded library; Rutabaga holds non-Send/non-Sync dyn component/context trait objects",
+    "external/crosvm/rutabaga_gfx/src/virgl_renderer.rs: init pins global thread-bound GL contexts; unref_resource contract says no user can still hold a reference",
+    "external/virglrenderer/src/vrend_renderer.c: gb_android_resource_read is reached by the resource owner; destroy releases EGL image then transfers gb_android_image before freeing vrend resource"
+  ],
+  "concurrency_scope": "Mutex protects registry transitions; atomic try-gate serializes nonwaiting reaper passes. This does not make the rest of virglrenderer or ACTIVE image API thread-safe.",
+  "limitations": [
+    "Permanently failing/missing fence status retains resources and consumes quota until process exit",
+    "No guarantee of a Vulkan driver API wall-clock deadline; reaper makes no WaitForFences/QueueWaitIdle/DeviceWaitIdle calls",
+    "No new EGL/GL calls in reaper; existing GL read completion and caller ownership contract remain required"
+  ],
+  "license": "MIT; original source notices retained",
+  "build_verified": true,
+  "host_mock_verified": true,
+  "installed": false,
+  "runtime_verified": false,
+  "full_port_verified": false,
+  "per_process_source_destination_upper_bound_bytes": 536870912,
+  "driver_allocation_overhead_included": false,
+  "reaper_triggers": [
+    "valid-layout image admission before slot reservation",
+    "image destruction after claiming ACTIVE ownership"
+  ],
+  "host_validation": {
+    "command": "PYTHONDONTWRITEBYTECODE=1 python3 tests/android_image_quarantine_reaper.py",
+    "tests_passed": 6,
+    "actual_patched_c_mock_scenarios": 7,
+    "sanitizers": [
+      "address",
+      "undefined"
+    ],
+    "scenarios": [
+      "eight simultaneous imports and refusal/reuse",
+      "sixteen partial creation failures roll back all reservations and FDs",
+      "completion after original resource owner disappears",
+      "admission opportunistically reaps completed quarantine",
+      "sixteen contending reaper threads claim each of eight objects once",
+      "device-lost status retains complete eight-object backing and refuses ninth",
+      "missing status function retains complete eight-object backing and refuses ninth"
+    ],
+    "regressions": {
+      "tests/android_image_swapchain_budget.py": 1,
+      "tests/android_image_opaque_formats.py": 1,
+      "tests/android_image_bridge.py": 4
+    },
+    "scope": "Actual patched bridge C with mock Vulkan/AHB functions and real owned Linux descriptors; no GPU driver, Android compile, EGL lifetime or device/runtime qualification"
+  },
+  "candidate_renderer_sha256": "30ebf74d989ad4450513947dd26a3d7da1319c4d4039e014b8996cc9b3548364",
+  "candidate_renderer_bytes": 3177160,
+  "abi_preserved": true,
+  "build_provenance": "artifacts/device/first-boot-20261013/guest-quarantine-reaper-20261020-v1/renderer-build-v1/provenance.json",
+  "android_runtime_verified": false
+}

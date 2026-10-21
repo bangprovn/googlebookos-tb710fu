@@ -1,0 +1,7 @@
+schema_version = 1
+codename = "mica"
+input = "../artifacts/inputs/mica-recovery.zip"
+sha256 = "cb68dd6dbd73e568cfeecca0cbd4ceb23338640814dc3ee52aba5507e5a645d7"
+recovery_member = "android-desktop_signed_recovery_image.bin"
+raw_sha256 = "b0fd614ffe1a088fa3451a4b81c55a73f83e246286184a46ca306250db9af1f1"
+reference = "gbos-vm 3b08ed29a73858644c65f24e06ee2a7cfb7e3774; pins require local verification"

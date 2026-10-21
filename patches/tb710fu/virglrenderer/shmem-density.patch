@@ -1,0 +1,166 @@
+--- a/src/venus/vkr_context.c
++++ b/src/venus/vkr_context.c
+@@ -5,9 +5,12 @@
+ 
+ #include "vkr_context.h"
+ 
++#include <errno.h>
+ #include <fcntl.h>
++#include <stdint.h>
+ #include <sys/mman.h>
+ #include <sys/types.h>
++#include <time.h>
+ #include <unistd.h>
+ 
+ #include "util/anon_file.h"
+@@ -449,6 +452,141 @@
+    return true;
+ }
+ 
++#ifdef __linux__
++#ifndef MADV_COLLAPSE
++#define MADV_COLLAPSE 25
++#endif
++#define VKR_SHM_PMD_BYTES (2UL << 20)
++#define VKR_SHM_DENSE_MAX_BYTES (64UL << 20)
++
++/* Only replace an address range reserved by this invocation. The exported
++ * memfd and its offset remain unchanged; no copy or guest protocol is added.
++ */
++static void *
++vkr_shm_dense_map(int fd, size_t size)
++{
++   if (getpagesize() != 4096 || size < VKR_SHM_PMD_BYTES ||
++       size > VKR_SHM_DENSE_MAX_BYTES || size % 4096) {
++      errno = EINVAL;
++      return MAP_FAILED;
++   }
++   const size_t total = size + VKR_SHM_PMD_BYTES;
++   void *reservation = mmap(NULL, total, PROT_NONE,
++                            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++   if (reservation == MAP_FAILED)
++      return MAP_FAILED;
++   const uintptr_t base = (uintptr_t)reservation;
++   if (base > UINTPTR_MAX - (VKR_SHM_PMD_BYTES - 1)) {
++      munmap(reservation, total);
++      errno = EOVERFLOW;
++      return MAP_FAILED;
++   }
++   const uintptr_t aligned = (base + VKR_SHM_PMD_BYTES - 1) &
++                             ~(uintptr_t)(VKR_SHM_PMD_BYTES - 1);
++   void *ptr = mmap((void *)aligned, size, PROT_READ | PROT_WRITE,
++                    MAP_SHARED | MAP_FIXED, fd, 0);
++   if (ptr == MAP_FAILED) {
++      const int error = errno;
++      munmap(reservation, total);
++      errno = error;
++      return MAP_FAILED;
++   }
++   const size_t lead = aligned - base;
++   const size_t tail = VKR_SHM_PMD_BYTES - lead;
++   /* On failure unmap only ranges still owned, including after a successful
++    * first trim. Another thread may immediately reuse a released range.
++    */
++   if (tail && munmap((char *)ptr + size, tail)) {
++      const int error = errno;
++      munmap(reservation, total);
++      errno = error;
++      return MAP_FAILED;
++   }
++   if (lead && munmap(reservation, lead)) {
++      const int error = errno;
++      munmap(reservation, lead + size);
++      errno = error;
++      return MAP_FAILED;
++   }
++   return ptr;
++}
++
++static bool
++vkr_shm_trace_allowed(void)
++{
++   const char *setting = getenv("GB_VENUS_ALLOCATION_DIAGNOSTICS_V1");
++   if (!setting || strcmp(setting, "1"))
++      return false;
++   static unsigned count;
++   unsigned current = __atomic_load_n(&count, __ATOMIC_RELAXED);
++   while (current < 16) {
++      if (__atomic_compare_exchange_n(&count, &current, current + 1, false,
++                                      __ATOMIC_RELAXED, __ATOMIC_RELAXED))
++         return true;
++   }
++   return false;
++}
++
++static void
++vkr_shm_dense_prepare(void *ptr, size_t size)
++{
++   unsigned attempted = 0, succeeded = 0, deadline = 0;
++   int last_error = 0;
++   struct timespec start, now;
++   if (clock_gettime(CLOCK_MONOTONIC, &start)) {
++      last_error = errno;
++   } else {
++      for (size_t off = 0; off + VKR_SHM_PMD_BYTES <= size;
++           off += VKR_SHM_PMD_BYTES) {
++         if (clock_gettime(CLOCK_MONOTONIC, &now)) {
++            last_error = errno;
++            break;
++         }
++         const int64_t elapsed = (int64_t)(now.tv_sec - start.tv_sec) * 1000 +
++                                 (now.tv_nsec - start.tv_nsec) / 1000000;
++         if (elapsed < 0 || elapsed >= 1000) {
++            deadline = 1;
++            break;
++         }
++         /* Fault one byte without modifying shared contents. This is a
++          * one-pass hint before export/pinning, with at most 32 syscalls.
++          * The deadline cannot interrupt an in-progress kernel syscall.
++          */
++         (void)*(volatile unsigned char *)((char *)ptr + off);
++         attempted++;
++         if (!madvise((char *)ptr + off, VKR_SHM_PMD_BYTES, MADV_COLLAPSE))
++            succeeded++;
++         else
++            last_error = errno;
++      }
++   }
++   if (vkr_shm_trace_allowed())
++      vkr_log("GB-VENUS-SHM: bytes=%zu attempted=%u succeeded=%u errno=%d deadline=%u",
++              size, attempted, succeeded, last_error, deadline);
++   /* Advice success is not proof of the final pinned scatter/gather list.
++    * Existing Gunyah byte/span guards remain authoritative on every export.
++    */
++}
++#endif
++
++static void *
++vkr_context_map_shm(int fd, size_t size)
++{
++#ifdef __linux__
++   const char *policy = getenv("GB_VENUS_GUEST_VRAM_V1");
++   if (policy && !strcmp(policy, "host") && getpagesize() == 4096 &&
++       size >= VKR_SHM_PMD_BYTES && size <= VKR_SHM_DENSE_MAX_BYTES &&
++       !(size % 4096)) {
++      void *ptr = vkr_shm_dense_map(fd, size);
++      if (ptr != MAP_FAILED) {
++         vkr_shm_dense_prepare(ptr, size);
++         return ptr;
++      }
++   }
++#endif
++   return mmap(NULL, size, PROT_WRITE | PROT_READ, MAP_SHARED, fd, 0);
++}
++
+ static bool
+ vkr_context_create_resource_from_shm(struct vkr_context *ctx,
+                                      uint32_t res_id,
+@@ -489,7 +627,7 @@
+    if (fd < 0)
+       return false;
+ 
+-   void *mmap_ptr = mmap(NULL, alloc_size, PROT_WRITE | PROT_READ, MAP_SHARED, fd, 0);
++   void *mmap_ptr = vkr_context_map_shm(fd, alloc_size);
+    if (mmap_ptr == MAP_FAILED) {
+       close(fd);
+       return false;

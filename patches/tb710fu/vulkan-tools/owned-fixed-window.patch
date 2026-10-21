@@ -1,0 +1,123 @@
+--- a/cube.c
++++ b/cube.c
+@@ -418,0 +419,7 @@
++static bool gb_owned_fixed_enabled(void) {
++    const char *selection = getenv("GB_VKCUBE_OWNED_FIXED_V1");
++    return selection && !strcmp(selection, "owned-fixed-v1");
++}
++static bool gb_owned_window_enabled(void) {
++    return gb_owned_resize_enabled() || gb_owned_fixed_enabled();
++}
+@@ -421,0 +429,16 @@
++}
++static bool gb_owned_window_extent(int32_t width, int32_t height) {
++    return gb_owned_fixed_enabled() ? width == 640 && height == 480 : gb_owned_resize_extent(width, height);
++}
++static bool gb_owned_window_arguments(bool wayland, int32_t width, int32_t height, int32_t frames) {
++    if (gb_owned_resize_enabled() && gb_owned_fixed_enabled()) return false;
++    if (!wayland || width != 640 || height != 480) return false;
++    return gb_owned_fixed_enabled() ? frames >= 2400 && frames <= 3600 : frames >= 2200 && frames <= 2400;
++}
++static bool gb_owned_fixed_configure(struct gb_owned_resize_state *s, int32_t width, int32_t height, bool maximized) {
++    if (maximized || width < 0 || height < 0 || s->configure_count >= 64) return false;
++    if (!width) width = 640;
++    if (!height) height = 480;
++    if (width != 640 || height != 480) return false;
++    s->width = width; s->height = height; s->configure_count++; s->currently_maximized = false;
++    return true;
+@@ -477 +500 @@
+-    printf("GB_OWNED_RESIZE:{\"schema_version\":1,\"status\":\"refused\",\"stage\":\"%s\",\"presentation_verified\":false}\n", stage);
++    printf("%s:{\"schema_version\":1,\"status\":\"refused\",\"stage\":\"%s\",\"presentation_verified\":false}\n", gb_owned_fixed_enabled() ? "GB_OWNED_FIXED" : "GB_OWNED_RESIZE", stage);
+@@ -636,0 +660,25 @@
++
++#if defined(VK_USE_PLATFORM_WAYLAND_KHR)
++/* GB_OWNED_FIXED_API_HELPER_BEGIN
++ * Diagnostic metadata only. Do not retry or change allocation policy; fail
++ * before the upstream assertion while preserving its behavior in other modes. */
++static void gb_owned_fixed_texture_api_error(struct demo *demo, const struct texture_object *tex_obj,
++                                             const char *api, int32_t result, uint32_t required_props,
++                                             uint32_t memory_type_bits) {
++    if (!gb_owned_fixed_enabled() || result == 0) return;
++    uint32_t index = tex_obj->mem_alloc.memoryTypeIndex;
++    bool known = index < demo->memory_properties.memoryTypeCount && index < VK_MAX_MEMORY_TYPES;
++    uint32_t flags = known ? demo->memory_properties.memoryTypes[index].propertyFlags : 0;
++    fprintf(stderr, "GB_OWNED_FIXED_API_ERROR:{\"schema_version\":1,\"api\":\"%s\",\"vk_result\":%" PRId32
++            ",\"frame\":%d,\"allocation_bytes\":%" PRIu64 ",\"memory_type_index\":%" PRIu32
++            ",\"memory_type_bits\":%" PRIu32 ",\"required_property_flags\":%" PRIu32
++            ",\"memory_properties_known\":%s,\"memory_property_flags\":%" PRIu32
++            ",\"host_coherent\":%s,\"presentation_verified\":false}\n",
++            api, result, demo->curFrame, (uint64_t)tex_obj->mem_alloc.allocationSize, index,
++            memory_type_bits, required_props, known ? "true" : "false", flags,
++            known && (flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) ? "true" : "false");
++    fflush(stderr);
++    gb_owned_resize_refuse("texture_image_api_failure");
++}
++/* GB_OWNED_FIXED_API_HELPER_END */
++#endif
+@@ -1521 +1569 @@
+-    if (gb_owned_resize_enabled() &&
++    if (gb_owned_window_enabled() &&
+@@ -1523 +1571 @@
+-         !gb_owned_resize_extent((int32_t)swapchainExtent.width, (int32_t)swapchainExtent.height) ||
++         !gb_owned_window_extent((int32_t)swapchainExtent.width, (int32_t)swapchainExtent.height) ||
+@@ -1576 +1624 @@
+-    if (gb_owned_resize_enabled() && err != VK_SUCCESS) gb_owned_resize_refuse("create_swapchain_failed");
++    if (gb_owned_window_enabled() && err != VK_SUCCESS) gb_owned_resize_refuse("create_swapchain_failed");
+@@ -1590 +1638 @@
+-    if (gb_owned_resize_enabled() && err != VK_SUCCESS) gb_owned_resize_refuse("get_swapchain_image_count_failed");
++    if (gb_owned_window_enabled() && err != VK_SUCCESS) gb_owned_resize_refuse("get_swapchain_image_count_failed");
+@@ -1595 +1643 @@
+-    if (gb_owned_resize_enabled()) {
++    if (gb_owned_window_enabled()) {
+@@ -1599 +1647,2 @@
+-        printf("GB_OWNED_RESIZE_CREATE:{\"frame\":%d,\"request\":%u,\"width\":%u,\"height\":%u,\"images\":%u,\"old_swapchain_supplied\":%s,\"recreations\":%u}\n",
++        printf("%s:{\"frame\":%d,\"request\":%u,\"width\":%u,\"height\":%u,\"images\":%u,\"old_swapchain_supplied\":%s,\"recreations\":%u}\n",
++               gb_owned_fixed_enabled() ? "GB_OWNED_FIXED_CREATE" : "GB_OWNED_RESIZE_CREATE",
+@@ -1610 +1659 @@
+-    if (gb_owned_resize_enabled() && (err != VK_SUCCESS || !demo->swapchainImageCount || demo->swapchainImageCount > 4))
++    if (gb_owned_window_enabled() && (err != VK_SUCCESS || !demo->swapchainImageCount || demo->swapchainImageCount > 4))
+@@ -1887,0 +1937,3 @@
++#if defined(VK_USE_PLATFORM_WAYLAND_KHR)
++    gb_owned_fixed_texture_api_error(demo, tex_obj, "vkAllocateMemory", err, required_props, mem_reqs.memoryTypeBits);
++#endif
+@@ -1892,0 +1945,3 @@
++#if defined(VK_USE_PLATFORM_WAYLAND_KHR)
++    gb_owned_fixed_texture_api_error(demo, tex_obj, "vkBindImageMemory", err, required_props, mem_reqs.memoryTypeBits);
++#endif
+@@ -1906,0 +1962,3 @@
++#if defined(VK_USE_PLATFORM_WAYLAND_KHR)
++        gb_owned_fixed_texture_api_error(demo, tex_obj, "vkMapMemory", err, required_props, mem_reqs.memoryTypeBits);
++#endif
+@@ -3116,0 +3175,6 @@
++    if (gb_owned_fixed_enabled()) {
++        if (demo->curFrame != demo->frameCount || demo->width != 640 || demo->height != 480 ||
++            !demo->gb_owned_resize.configure_count) gb_owned_resize_refuse("incomplete_fixed_window_run");
++        printf("GB_OWNED_FIXED_COMPLETED:{\"schema_version\":1,\"frames\":%d,\"width\":640,\"height\":480,\"presentation_verified\":false}\n", demo->curFrame);
++        fflush(stdout);
++    }
+@@ -3133 +3197 @@
+-    if (gb_owned_resize_enabled()) {
++    if (gb_owned_window_enabled()) {
+@@ -3139 +3203,4 @@
+-        if (!gb_owned_resize_configure(&demo->gb_owned_resize, width, height, maximized))
++        bool configured = gb_owned_fixed_enabled()
++            ? gb_owned_fixed_configure(&demo->gb_owned_resize, width, height, maximized)
++            : gb_owned_resize_configure(&demo->gb_owned_resize, width, height, maximized);
++        if (!configured)
+@@ -3142 +3209,2 @@
+-        printf("GB_OWNED_RESIZE_CONFIGURE:{\"frame\":%d,\"request\":%u,\"raw_width\":%d,\"raw_height\":%d,\"width\":%d,\"height\":%d,\"maximized\":%s,\"configure_count\":%u}\n",
++        printf("%s:{\"frame\":%d,\"request\":%u,\"raw_width\":%d,\"raw_height\":%d,\"width\":%d,\"height\":%d,\"maximized\":%s,\"configure_count\":%u}\n",
++               gb_owned_fixed_enabled() ? "GB_OWNED_FIXED_CONFIGURE" : "GB_OWNED_RESIZE_CONFIGURE",
+@@ -3748 +3816 @@
+-    } else if (strcmp(interface, wl_seat_interface.name) == 0 && !gb_owned_resize_enabled()) {
++    } else if (strcmp(interface, wl_seat_interface.name) == 0 && !gb_owned_window_enabled()) {
+@@ -3812 +3880 @@
+-    if (gb_owned_resize_enabled()) {
++    if (gb_owned_window_enabled()) {
+@@ -4996,3 +5064,3 @@
+-    if (gb_owned_resize_enabled()) {
+-        if (demo->wsi_platform != WSI_PLATFORM_WAYLAND || demo->width != 640 || demo->height != 480 ||
+-            demo->frameCount < 2200 || demo->frameCount > 2400) gb_owned_resize_refuse("explicit_wayland_and_bounded_run_required");
++    if (gb_owned_window_enabled()) {
++        if (!gb_owned_window_arguments(demo->wsi_platform == WSI_PLATFORM_WAYLAND,
++                demo->width, demo->height, demo->frameCount)) gb_owned_resize_refuse("explicit_wayland_and_bounded_run_required");

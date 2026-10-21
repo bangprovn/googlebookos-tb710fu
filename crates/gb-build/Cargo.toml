@@ -1,0 +1,34 @@
+[package]
+name = "gb-build"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+toml.workspace = true
+gb-avb.workspace = true
+gb-boot.workspace = true
+gb-tools.workspace = true
+gb-image.workspace = true
+gb-selinux.workspace = true
+gb-framework.workspace = true
+gb-core.workspace = true
+gb-config.workspace = true
+gb-firmware.workspace = true
+gb-compat.workspace = true
+gb-partition.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+zip.workspace = true
+fs2.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[build-dependencies]
+sha2.workspace = true

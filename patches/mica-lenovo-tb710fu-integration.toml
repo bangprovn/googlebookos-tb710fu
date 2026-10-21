@@ -1,0 +1,20 @@
+schema_version = 1
+id = "mica-desktop-on-lenovo-tb710fu"
+revision = 1
+donor_source_sha256 = "b0fd614ffe1a088fa3451a4b81c55a73f83e246286184a46ca306250db9af1f1"
+target_source_sha256 = "1486eb02d8735f70afa744f176c19d8f2d6b7206a8a43424b2e38912c4f6bf3a"
+
+# Verified filesystem contents select system_a. system_b contains factory preloads
+# and precompiled app artifacts, not the desktop framework; its mount integration
+# must be investigated separately. This is a validation plan, not a flash recipe.
+[partitions.system]
+donor = "system_a"
+target = "system_a"
+
+[partitions.product]
+donor = "product_a"
+target = "product_a"
+
+[partitions.system_ext]
+donor = "system_ext_a"
+target = "system_ext_a"

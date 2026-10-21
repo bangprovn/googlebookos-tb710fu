@@ -1,0 +1,188 @@
+diff --git a/devices/src/serial_device.rs b/devices/src/serial_device.rs
+index bd2f4c7..52b0720 100644
+--- a/devices/src/serial_device.rs
++++ b/devices/src/serial_device.rs
+@@ -199,6 +199,9 @@ pub struct SerialParameters {
+     )]
+     pub debugcon_port: u16,
+     pub pci_address: Option<PciAddress>,
++    /// Optional receive/transmit queue maxima for a local virtio console.
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub max_queue_sizes: Option<Vec<u16>>,
+ }
+ 
+ /// Temporary structure containing the parameters of a serial port for easy passing to
+@@ -224,6 +227,19 @@ impl SerialParameters {
+         evt: &Event,
+         keep_rds: &mut Vec<RawDescriptor>,
+     ) -> std::result::Result<T, Error> {
++        if let Some(sizes) = &self.max_queue_sizes {
++            if self.hardware != SerialHardware::VirtioConsole
++                || !matches!(
++                    self.type_,
++                    SerialType::File | SerialType::Stdout | SerialType::Sink | SerialType::Syslog
++                )
++                || !crate::virtio::console::queue_limits::valid(sizes)
++            {
++                return Err(Error::InvalidConfig(
++                    "max-queue-sizes requires a local virtio console and two power-of-two maxima in 1..=256".into(),
++                ));
++            }
++        }
+         let evt = evt.try_clone().map_err(Error::CloneEvent)?;
+         keep_rds.push(evt.as_raw_descriptor());
+         cros_tracing::push_descriptors!(keep_rds);
+@@ -321,7 +337,7 @@ impl SerialParameters {
+                 return create_dev_serial_device(self, protection_type, evt, input, keep_rds);
+             }
+         };
+-        Ok(T::new(
++        let mut device = T::new(
+             protection_type,
+             evt,
+             input,
+@@ -334,7 +350,15 @@ impl SerialParameters {
+                 pci_address: self.pci_address,
+             },
+             keep_rds.to_vec(),
+-        ))
++        );
++        if let Some(sizes) = &self.max_queue_sizes {
++            if !device.set_max_queue_sizes(sizes) {
++                return Err(Error::InvalidConfig(
++                    "console queue limits unsupported by this backend".into(),
++                ));
++            }
++        }
++        Ok(device)
+     }
+ }
+ 
+@@ -369,6 +393,7 @@ mod tests {
+                 out_timestamp: false,
+                 debugcon_port: 0x402,
+                 pci_address: None,
++                max_queue_sizes: None,
+             }
+         );
+ 
+diff --git a/devices/src/sys/linux/serial_device.rs b/devices/src/sys/linux/serial_device.rs
+index 51558b3..031b796 100644
+--- a/devices/src/sys/linux/serial_device.rs
++++ b/devices/src/sys/linux/serial_device.rs
+@@ -62,6 +62,10 @@ impl SerialInput for ConsoleInput {}
+ /// Abstraction over serial-like devices that can be created given an event and optional input and
+ /// output streams.
+ pub trait SerialDevice {
++    /// Backends must explicitly implement requested queue limits.
++    fn set_max_queue_sizes(&mut self, _sizes: &[u16]) -> bool {
++        false
++    }
+     fn new(
+         protection_type: ProtectionType,
+         interrupt_evt: Event,
+diff --git a/devices/src/sys/windows/serial_device.rs b/devices/src/sys/windows/serial_device.rs
+index 90f8268..b26505b 100644
+--- a/devices/src/sys/windows/serial_device.rs
++++ b/devices/src/sys/windows/serial_device.rs
+@@ -24,6 +24,10 @@ pub const SYSTEM_SERIAL_TYPE_NAME: &str = "NamedPipe";
+ /// Abstraction over serial-like devices that can be created given an event and optional input and
+ /// output streams.
+ pub trait SerialDevice {
++    /// Backends must explicitly implement requested queue limits.
++    fn set_max_queue_sizes(&mut self, _sizes: &[u16]) -> bool {
++        false
++    }
+     fn new(
+         protection_type: ProtectionType,
+         interrupt_evt: Event,
+diff --git a/devices/src/virtio/console.rs b/devices/src/virtio/console.rs
+index 4e956c8..59de4c8 100644
+--- a/devices/src/virtio/console.rs
++++ b/devices/src/virtio/console.rs
+@@ -9,6 +9,7 @@ pub mod device;
+ pub mod input;
+ pub mod output;
+ pub mod port;
++pub(crate) mod queue_limits;
+ pub mod worker;
+ 
+ mod sys;
+diff --git a/devices/src/virtio/console/sys/linux.rs b/devices/src/virtio/console/sys/linux.rs
+index 92ef892..9cb0983 100644
+--- a/devices/src/virtio/console/sys/linux.rs
++++ b/devices/src/virtio/console/sys/linux.rs
+@@ -29,6 +29,9 @@ use crate::virtio::ProtectionType;
+ use crate::SerialDevice;
+ 
+ impl SerialDevice for Console {
++    fn set_max_queue_sizes(&mut self, sizes: &[u16]) -> bool {
++        super::super::queue_limits::apply(&mut self.queue_sizes, sizes)
++    }
+     fn new(
+         protection_type: ProtectionType,
+         _event: Event,
+diff --git a/devices/src/virtio/console/sys/windows.rs b/devices/src/virtio/console/sys/windows.rs
+index 4096aa8..66b8a0a 100644
+--- a/devices/src/virtio/console/sys/windows.rs
++++ b/devices/src/virtio/console/sys/windows.rs
+@@ -23,6 +23,9 @@ use crate::virtio::ProtectionType;
+ use crate::SerialDevice;
+ 
+ impl SerialDevice for Console {
++    fn set_max_queue_sizes(&mut self, sizes: &[u16]) -> bool {
++        super::super::queue_limits::apply(&mut self.queue_sizes, sizes)
++    }
+     fn new(
+         protection_type: ProtectionType,
+         _event: Event,
+diff --git a/devices/src/virtio/console/queue_limits.rs b/devices/src/virtio/console/queue_limits.rs
+new file mode 100644
+index 0000000..95d3ed3
+--- /dev/null
++++ b/devices/src/virtio/console/queue_limits.rs
+@@ -0,0 +1,44 @@
++// Copyright 2026 Googlebook port contributors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++pub(crate) fn valid(sizes: &[u16]) -> bool {
++    sizes.len() == 2 && sizes.iter().all(|n| n.is_power_of_two() && *n <= 256)
++}
++
++pub(crate) fn apply(current: &mut [u16], requested: &[u16]) -> bool {
++    if current.len() != requested.len() || !valid(requested) {
++        return false;
++    }
++    current.copy_from_slice(requested);
++    true
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    #[test]
++    fn preserves_defaults_and_applies_donor_console_limits() {
++        let mut sizes = [256, 256];
++        assert!(apply(&mut sizes, &[2, 32]));
++        assert_eq!(sizes, [2, 32]);
++        assert!(apply(&mut sizes, &[256, 256]));
++        assert_eq!(sizes, [256, 256]);
++    }
++    #[test]
++    fn rejects_invalid_limits_without_partial_mutation() {
++        for request in [
++            vec![],
++            vec![2],
++            vec![2, 32, 4],
++            vec![0, 32],
++            vec![3, 32],
++            vec![2, 512],
++        ] {
++            let mut sizes = [256, 256];
++            assert!(!apply(&mut sizes, &request));
++            assert_eq!(sizes, [256, 256]);
++        }
++        assert!(!apply(&mut [256], &[2, 32]));
++    }
++}

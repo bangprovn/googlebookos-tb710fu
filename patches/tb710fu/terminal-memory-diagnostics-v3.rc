@@ -1,0 +1,32 @@
+# Explicit owner diagnostics only; no boot trigger or memory reservation.
+# Record both current policies and restore each after the experiment.
+on property:debug.gb.vm_shmem_policy=advise
+    setprop debug.gb.vm_shmem_policy 0
+    write /sys/kernel/mm/transparent_hugepage/shmem_enabled advise
+
+on property:debug.gb.vm_shmem_policy=within_size
+    setprop debug.gb.vm_shmem_policy 0
+    write /sys/kernel/mm/transparent_hugepage/shmem_enabled within_size
+
+on property:debug.gb.vm_shmem_policy=never
+    setprop debug.gb.vm_shmem_policy 0
+    write /sys/kernel/mm/transparent_hugepage/shmem_enabled never
+
+on property:debug.gb.vm_thp_defrag=madvise
+    setprop debug.gb.vm_thp_defrag 0
+    write /sys/kernel/mm/transparent_hugepage/defrag madvise
+
+on property:debug.gb.vm_thp_defrag=never
+    setprop debug.gb.vm_thp_defrag 0
+    write /sys/kernel/mm/transparent_hugepage/defrag never
+
+# One explicit synchronous compaction request on this owner development build.
+# This can pause allocation; it is not periodic and never changes file contents.
+# "completed" means init finished this action, not proof of allocation success.
+# The host must verify the exact proc label, VM-idle state, init errors and VM
+# compaction counters before drawing a runtime conclusion.
+on property:debug.gb.vm_compact=1 && property:ro.debuggable=1 && property:sys.boot_completed=1
+    setprop debug.gb.vm_compact_state running
+    write /proc/sys/vm/compact_memory 1
+    setprop debug.gb.vm_compact_state completed
+    setprop debug.gb.vm_compact 0

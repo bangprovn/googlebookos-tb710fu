@@ -1,0 +1,38 @@
+schema_version = 1
+external_prerequisites = [
+  "Lenovo TB710FU stock firmware and a tested recovery procedure",
+  "Mica donor firmware, configured image tools and authorized signing keys"
+]
+
+[device]
+codename = "TB710FU"
+manufacturer = { status = "observed", value = "LENOVO", evidence = "Stock firmware properties on the tested tablet." }
+architecture = { status = "observed", value = "aarch64", evidence = "Stock arm64-v8a userspace and aarch64 kernel." }
+soc_vendor = { status = "observed", value = "qualcomm", evidence = "Stock firmware reports QTI." }
+soc_model = { status = "observed", value = "SM8650Q", evidence = "Stock firmware reports SM8650Q / pineapple." }
+base_android = { status = "observed", value = 16, evidence = "Target vendor firmware reports Android 16 / SDK 36." }
+
+[firmware]
+input = "../inputs/tb710fu-stock"
+completeness = "partition_subset"
+preserve_partitions = ["boot", "init_boot", "vendor_boot", "vendor", "odm", "system_dlkm", "vendor_dlkm", "odm_dlkm", "dtbo", "modem", "abl", "persist", "metadata"]
+
+[boot]
+bootloader_locked = { status = "observed", value = true, evidence = "Boot properties on the tested unit; verify on your tablet." }
+strategy = { status = "observed", value = "edl", evidence = "Used during development with a matching programmer and stock backups." }
+test_key_acceptance = { status = "observed", value = true, evidence = "Development-signed builds booted on the tested unit. This is not a guarantee for other units or firmware versions." }
+rollback_requirement = { status = "unknown", evidence = "Read the target AVB metadata and rollback locations before preparing images." }
+
+[features]
+desktop_mode = { status = "observed", value = true, evidence = "Googlebook desktop boots on the tested TB710FU." }
+terminal_vm = { status = "observed", value = true, evidence = "Original Terminal boots Debian and executes commands with 2 GiB RAM on R2." }
+terminal_reset_memory_policy = { status = "observed", value = true, evidence = "Immutable adapter maps the original app's 4096 MiB request to 2048 MiB; a guest command verified the effective allocation." }
+phone_link = { status = "observed", value = false, evidence = "Device discovery does not find the peer phone." }
+touchscreen = { status = "unknown", evidence = "Full input regression coverage remains incomplete." }
+stylus = { status = "unknown" }
+external_display = { status = "unknown" }
+suspend_resume = { status = "unknown" }
+guest_vulkan_acceleration = { status = "unknown", evidence = "Limited graphics tests passed on earlier builds; broad R2 graphics and lifecycle coverage is incomplete." }
+
+[graphics]
+guest_image_import_format = { status = "observed", value = 875708993, evidence = "DRM ABGR8888 observed in earlier TB710FU guest image tests. This does not establish full graphics compatibility." }

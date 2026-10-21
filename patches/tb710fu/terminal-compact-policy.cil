@@ -1,0 +1,10 @@
+; Owner-only development diagnostic. Label one sysctl separately so neither
+; shell nor apps gain generic proc writes. No existing type is repurposed.
+(type gb_vm_compact_proc)
+(roletype object_r gb_vm_compact_proc)
+(typeattributeset fs_type (gb_vm_compact_proc))
+(typeattributeset proc_type (gb_vm_compact_proc))
+(genfscon proc /sys/vm/compact_memory (u object_r gb_vm_compact_proc ((s0) (s0))))
+(allow init gb_vm_compact_proc (file (open getattr write)))
+; Permit the host to verify the effective label; no shell open/read/write.
+(allow shell gb_vm_compact_proc (file (getattr)))

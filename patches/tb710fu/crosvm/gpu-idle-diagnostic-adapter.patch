@@ -1,0 +1,30 @@
+--- a/crosvm_runtime_adapter.rs
++++ b/crosvm_runtime_adapter.rs
+@@ -19,6 +19,17 @@
+         command.env("GB_ANDROID_IMAGE_BRIDGE_V1", "diagnostic-linear-v1");
+     }
+ }
++
++// GB_GPU_IDLE_DIAGNOSTIC_ADAPTER_BEGIN
++// Artifact-only diagnostic variant. Match it with the separately built traced
++// native worker; never inherit this diagnostic into another VM profile.
++fn configure_gpu_idle_trace(command: &mut Command, private_venus: bool, name: Option<&str>) {
++    command.env_remove("GB_GPU_IDLE_TRACE_V1");
++    if private_venus && name == Some(DEFAULT) {
++        command.env("GB_GPU_IDLE_TRACE_V1", "worker-counters-v1");
++    }
++}
++// GB_GPU_IDLE_DIAGNOSTIC_ADAPTER_END
+ 
+ fn selected(name: &str) -> bool {
+     name == DEFAULT
+@@ -396,6 +407,9 @@
+     };
+     let mut command = Command::new(target);
+     configure_image_bridge(&mut command, result.private_venus, option(&args, "--name")?);
++    // GB_GPU_IDLE_DIAGNOSTIC_EXEC_BEGIN
++    configure_gpu_idle_trace(&mut command, result.private_venus, option(&args, "--name")?);
++    // GB_GPU_IDLE_DIAGNOSTIC_EXEC_END
+     if result.private_venus && option(&args, "--name")? == Some(DEFAULT) {
+         let diagnostic = host_image_probe::run(base);
+         if diagnostic != "image_probe outcome=disabled" {

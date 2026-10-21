@@ -1,0 +1,69 @@
+{
+  "kprobes": false,
+  "private_symbol_resolution": false,
+  "new_exports": false,
+  "kasan_enabled": true,
+  "native_allocation_hygiene_retained": true,
+  "pool_default_disabled": true,
+  "reservation_max_mib": 2048,
+  "optional_cma_reservoir": false,
+  "status": "passed",
+  "files": {
+    "mm/page_alloc.c": {
+      "before_sha256": "e65d16edd344629c17d0e07b5090c2711782a831e4b7d45dedc1e1664119b0fd",
+      "after_sha256": "f56e04a60c2fd11fdec3b95d6b9a4375cb12083662e31549db7c178ff4402daf"
+    },
+    "drivers/virt/gunyah/Makefile": {
+      "before_sha256": "bfba1f687166bca5ad58424df03d5f11f46073ba6edfd317ef637af6f633cd48",
+      "after_sha256": "c5d29a11f862ee7c82842716ba83d40c8ae67dadd42be36b65bdfa06ddc65f3e"
+    },
+    "drivers/virt/gunyah/vm_mgr.c": {
+      "before_sha256": "2d301368c7f9d502163cc66a7ab832cecb22b80d1d75835502ed72c61ff2fd20",
+      "after_sha256": "d27c113c0bd7410e13f2f2124a7ed95f7cef6a3da99a7462677d242381deaac6"
+    },
+    "drivers/virt/gunyah/gb-runtime-share.c": {
+      "before_sha256": "ecd360c04168725bdd50acc770f7282f29c91bd2537a3006607b33ff4eba29c4",
+      "after_sha256": "af4e74ce039c580fb1070898b4959f0c86ad03fec818e0dbbe835992efe98556"
+    },
+    "drivers/virt/gunyah/gb-runtime-share.h": {
+      "before_sha256": "8c76224deb9001b41ec3239c0fb2b075b5ec9030314e7076befb3d712c19482f",
+      "after_sha256": "08bcb74f0d049c2c2fb37204c69ce5b5674f84f847027a1229bbb2687523716b"
+    },
+    "include/linux/gb-gunyah-pool.h": {
+      "before_sha256": null,
+      "after_sha256": "866dc5defaa81ea9415c246b4105715e53c386640bb27a44c1b8d2b05d6ec5b0"
+    },
+    "drivers/virt/gunyah/gb-ram-pool.c": {
+      "before_sha256": null,
+      "after_sha256": "69c126a28904d7604a1d22143cf37d34f8c9af0e87ed58bf3904cbe4825fb910"
+    },
+    "drivers/virt/gunyah/reserve-core/LICENSE.txt": {
+      "before_sha256": null,
+      "after_sha256": "aaf135472f81c5b4a0dca9367e5bb5e9750032b5bebe5442b36e4c0a47430df3"
+    },
+    "drivers/virt/gunyah/reserve-core/gh_defs.h": {
+      "before_sha256": null,
+      "after_sha256": "e2b7269671faf1100d4a4c5f598be5b7d3b0ad124c1de539a223b29a648cca43"
+    },
+    "drivers/virt/gunyah/reserve-core/gh_kernel_env.h": {
+      "before_sha256": null,
+      "after_sha256": "d40cbad52a827b997e8acf9f14cd78d5b9d0a96d3fd9c3cc2f9a202c23492fc5"
+    },
+    "drivers/virt/gunyah/reserve-core/gh_owner.c.inc": {
+      "before_sha256": null,
+      "after_sha256": "9d975a9a7c7ea653a35388201591cf1e78ee55bde3902677fafcba6ce68fd4e3"
+    },
+    "drivers/virt/gunyah/reserve-core/gh_pool.c.inc": {
+      "before_sha256": null,
+      "after_sha256": "eeeca2d1d6198a1ffbbfd79acbda2c10895d1987a639c57b138253b5e5e592ac"
+    },
+    "drivers/virt/gunyah/reserve-core/upstream.json": {
+      "before_sha256": null,
+      "after_sha256": "72b6180648f304e6eb3949fb0999ab88834ed0dbc9e50c05f7bba8c96bb5c8d2"
+    }
+  },
+  "source_files": 13,
+  "source_patch_roundtrip": true,
+  "base": "Lenovo kernel5c2cea985a84 with retained D51 IRQ/runtime-share/failure-phase series",
+  "upstream_pool_commit": "e15c40d600dd19b2c5bcb220a92f7359c9ee0846"
+}

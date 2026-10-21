@@ -1,0 +1,100 @@
+{
+  "schema_version": 1,
+  "source_version": "Vulkan-Tools v1.4.304",
+  "base_patch": "owned-resize-diagnostic.json",
+  "files": [
+    {
+      "path": "cube.c",
+      "sha256": "cee019fe0c61895bebc813ecca4a164ac51f5bfd255fbbe31128dffe86fee640",
+      "result_sha256": "21441c3d71b1653b8f67ccec62e0ad83915de012bb27140b3dd0840a5c1b01fb"
+    }
+  ],
+  "patch_sha256": "8fc07a43878210ae355c64eb9f10ce9ba6ef85510407553f8ef6d812cfd03bce",
+  "opt_in": {
+    "GB_VKCUBE_OWNED_FIXED_V1": "owned-fixed-v1"
+  },
+  "scope": "Process-only fixed-size Wayland diagnostic; shared owned-window peer/input/resource safeguards, no automatic resize requests or sample markers",
+  "required_environment": [
+    "GB_OWNED_COMPOSITOR_PID",
+    "WAYLAND_DISPLAY (wayland-0, wayland-1 or wayland-2)"
+  ],
+  "required_arguments": [
+    "--wsi",
+    "wayland",
+    "--width",
+    "640",
+    "--height",
+    "480",
+    "--c",
+    "2400..3600"
+  ],
+  "simultaneous_resize_and_fixed_tokens_refused": true,
+  "wl_seat_bound_in_owned_modes": false,
+  "owned_peer_uid": 1000,
+  "alarm_seconds": 90,
+  "fixed_content_width": 640,
+  "fixed_content_height": 480,
+  "maximum_images_per_swapchain": 4,
+  "maximum_configure_events": 64,
+  "maximum_configure_states": 64,
+  "maximum_old_swapchain_recreations": 16,
+  "notes": [
+    "No default upstream behavior change when neither exact diagnostic token is selected.",
+    "Original resize actions, six samples and resize completion stay gated solely by original resize token.",
+    "Fixed mode accepts compositor zero dimensions as client-selected640x480 and refuses other extents or maximized configuration.",
+    "Actual Vulkan image count is checked after swapchain creation; request count cannot impose a driver allocation ceiling.",
+    "Uses existing upstream rendering/retirement behavior; no presentation or explicit GPU retirement proof.",
+    "Host helper tests do not execute Wayland, Vulkan driver, Android build or devices.",
+    "Fixed-mode texture-image allocation/bind/map failures emit numeric metadata and fail-stop exit2; process exit retains normal operating-system cleanup, not a new Vulkan lifetime proof."
+  ],
+  "license": "Apache-2.0; original notices retained",
+  "host_helper_tests_verified": true,
+  "build_verified": true,
+  "device_runtime_verified": false,
+  "presentation_verified": false,
+  "full_port_verified": false,
+  "host_helper_test_command": "PYTHONDONTWRITEBYTECODE=1 python3 tests/vulkan_cube_fixed_window_patch.py",
+  "host_helper_tests": 3,
+  "host_helper_sanitizers": [
+    "address",
+    "undefined"
+  ],
+  "regression_tests_passed": {
+    "tests/vulkan_cube_resize_patch.py": 2,
+    "tests/owned_wayland_metadata.py": 3
+  },
+  "installed": false,
+  "source": "https://github.com/KhronosGroup/Vulkan-Tools/blob/v1.4.304/cube/cube.c",
+  "maximum_fixed_rgba_pixel_bytes_per_image": 1228800,
+  "driver_allocation_overhead_included": false,
+  "revision": 2,
+  "previous_revision": {
+    "revision": 1,
+    "result_sha256": "6c322fc27e67f2fe5f306891aa6b9f861ddc759dd831269211c55f78b57bb032",
+    "patch_sha256": "ba85b05f4b5e2f9c6f8f14c104f9cca3504c97389af8039d092d90152acf4946",
+    "candidate_binary_sha256": "d7c69b78981974b9dd6a5a2eea74be21e877c26383af2db26f30784bede2ef29",
+    "candidate_binary_bytes": 395192,
+    "compile_provenance": "artifacts/device/first-boot-20261013/guest-swapchain-budget-20261020-v1/owned-fixed-build-v1/compile-result.json",
+    "scope": "Prior binary retained for provenance; not this revised source",
+    "build_verified": true
+  },
+  "texture_api_diagnostics": {
+    "fixed_mode_only": true,
+    "calls": [
+      "vkAllocateMemory (texture image)",
+      "vkBindImageMemory (texture image)",
+      "vkMapMemory (texture image)"
+    ],
+    "stderr_prefix": "GB_OWNED_FIXED_API_ERROR:",
+    "failure_exit_code": 2,
+    "allocation_bytes": "Exact uint64 numeric metadata, at most20 decimal digits; no memory dump",
+    "default_or_resize_behavior_changed": false,
+    "memory_property_array_access": "Only when selected index < reported memoryTypeCount and VK_MAX_MEMORY_TYPES; otherwise known=false and flags=0",
+    "new_vulkan_calls_or_retries": false,
+    "host_injected_api_failure_tests_verified": true,
+    "host_helper_invocations": 10
+  },
+  "candidate_binary_sha256": "b01366a47e90f9f203415efc1f967e61f174b40d69cc76eb5813228736ccba8e",
+  "candidate_binary_bytes": 396080,
+  "compile_provenance": "artifacts/device/first-boot-20261013/guest-swapchain-budget-20261020-v1/owned-fixed-build-v2/compile-result.json"
+}

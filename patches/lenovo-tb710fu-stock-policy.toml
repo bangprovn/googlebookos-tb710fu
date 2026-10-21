@@ -1,0 +1,16 @@
+schema_version = 1
+id = "lenovo-tb710fu-stock-policy-baseline"
+revision = 1
+donor_source_sha256 = "deff792fc7fa6d20f52667a9a3d2c8d2f2614605f66b8ffee28e41fa63e07c40"
+target_source_sha256 = "deff792fc7fa6d20f52667a9a3d2c8d2f2614605f66b8ffee28e41fa63e07c40"
+
+# Compiler baseline only; this selects Lenovo's original policy on both sides.
+[partitions.system]
+donor = "system_a"
+target = "system_a"
+[partitions.system_ext]
+donor = "system_ext_a"
+target = "system_ext_a"
+[partitions.product]
+donor = "product_a"
+target = "product_a"

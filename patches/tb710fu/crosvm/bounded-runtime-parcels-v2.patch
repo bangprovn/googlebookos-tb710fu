@@ -1,0 +1,36 @@
+--- a/hypervisor/src/gunyah/shim_abi.rs
++++ b/hypervisor/src/gunyah/shim_abi.rs
+@@ -27,12 +27,12 @@
+ pub const SHIM_HEADER_MAGIC: u64 = 0x4d53_4856_554d_5644;
+ /// "MVSHANDO", little-endian.
+ pub const SHIM_HANDOFF_MAGIC: u64 = 0x4f44_4e41_4853_564d;
+-pub const SHIM_ABI_VERSION: u32 = 1;
++pub const SHIM_ABI_VERSION: u32 = 2;
+ 
+ /// The most parcels one window may be shared as. A window is one parcel unless something forces
+ /// it to be split, so this is headroom rather than a target: every parcel costs one of the 1024
+ /// the resource manager allows per VM, shared with Android's own and not returned until reboot.
+-pub const SHIM_MAX_PARCELS: usize = 32;
++pub const SHIM_MAX_PARCELS: usize = 128;
+ 
+ /// Offset of the header within the shim image. Offset 0 is the entry branch.
+ pub const SHIM_HEADER_OFFSET: usize = 8;
+@@ -117,3 +117,7 @@
+         }
+     }
+ }
++
++// Both consumers must keep the complete versioned handoff within one 4 KiB page.
++const _: () = assert!(core::mem::size_of::<ShimHandoff>() <= 4096);
++const _: () = assert!(core::mem::size_of::<ShimHeader>() == 64);
+--- a/droidvm-shim/src/start.S
++++ b/droidvm-shim/src/start.S
+@@ -17,7 +17,7 @@
+ 	.globl shim_header
+ shim_header:				// +0x08, struct ShimHeader
+ 	.quad	0x4d534856554d5644		// magic "DVMUVHSM"
+-	.word	1				// version
++	.word	2				// version
+ 	.word	0				// flags
+ 	.quad	0				// payload
+ 	.quad	0				// handoff

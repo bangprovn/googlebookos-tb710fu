@@ -1,0 +1,104 @@
+--- a/drivers/virt/gunyah/vm_mgr.c
++++ b/drivers/virt/gunyah/vm_mgr.c
+@@ -494,11 +494,14 @@
+ 	}
+ 
+ 	ghvm->nb.notifier_call = gh_vm_rm_notification;
++	dev_info(ghvm->parent, "gb-gunyah-start-v1: notifier begin\n");
+ 	ret = gh_rm_notifier_register(ghvm->rm, &ghvm->nb);
+ 	if (ret)
+ 		goto err;
+ 
++	dev_info(ghvm->parent, "gb-gunyah-start-v1: alloc-vmid begin\n");
+ 	ret = gh_rm_alloc_vmid(ghvm->rm, 0);
++	dev_info(ghvm->parent, "gb-gunyah-start-v1: alloc-vmid result=%d\n", ret < 0 ? ret : 0);
+ 	if (ret < 0) {
+ 		gh_rm_notifier_unregister(ghvm->rm, &ghvm->nb);
+ 		goto err;
+@@ -506,13 +509,18 @@
+ 	ghvm->vmid = ret;
+ 	ghvm->vm_status = GH_RM_VM_STATUS_LOAD;
+ 
++	dev_info(ghvm->parent, "gb-gunyah-start-v1: pci-fixup begin\n");
+ 	ret = gh_vm_mem_fixup_pci_ranges(ghvm);
++	dev_info(ghvm->parent, "gb-gunyah-start-v1: pci-fixup result=%d\n", ret);
+ 	if (ret)
+ 		goto err;
+ 
+ 	mutex_lock(&ghvm->mm_lock);
+ 	list_for_each_entry(mapping, &ghvm->memory_mappings, list) {
+ 		mapping->parcel.acl_entries[0].vmid = cpu_to_le16(ghvm->vmid);
++		dev_info(ghvm->parent, "gb-gunyah-start-v1: parcel begin label=%u entries=%zu acl=%zu lend=%d\n",
++			 mapping->parcel.label, mapping->parcel.n_mem_entries,
++			 mapping->parcel.n_acl_entries, mapping->share_type == VM_MEM_LEND);
+ 		switch (mapping->share_type) {
+ 		case VM_MEM_LEND:
+ 			ret = gh_rm_mem_lend(ghvm->rm, &mapping->parcel);
+@@ -521,6 +529,8 @@
+ 			ret = gh_rm_mem_share(ghvm->rm, &mapping->parcel);
+ 			break;
+ 		}
++		dev_info(ghvm->parent, "gb-gunyah-start-v1: parcel result label=%u result=%d\n",
++			 mapping->parcel.label, ret);
+ 		if (ret) {
+ 			dev_warn(ghvm->parent, "Failed to %s parcel %d: %d\n",
+ 				mapping->share_type == VM_MEM_LEND ? "lend" : "share",
+@@ -542,8 +552,10 @@
+ 	mem_handle = mapping->parcel.mem_handle;
+ 	dtb_offset = ghvm->dtb_config.guest_phys_addr - mapping->guest_phys_addr;
+ 
++	dev_info(ghvm->parent, "gb-gunyah-start-v1: configure begin auth=%u\n", ghvm->auth);
+ 	ret = gh_rm_vm_configure(ghvm->rm, ghvm->vmid, ghvm->auth, mem_handle,
+ 				0, 0, dtb_offset, ghvm->dtb_config.size);
++	dev_info(ghvm->parent, "gb-gunyah-start-v1: configure result=%d\n", ret);
+ 	if (ret) {
+ 		dev_warn(ghvm->parent, "Failed to configure VM: %d\n", ret);
+ 		goto err;
+@@ -566,7 +578,9 @@
+ 		}
+ 	}
+ 
++	dev_info(ghvm->parent, "gb-gunyah-start-v1: initialize begin\n");
+ 	ret = gh_rm_vm_init(ghvm->rm, ghvm->vmid);
++	dev_info(ghvm->parent, "gb-gunyah-start-v1: initialize result=%d\n", ret);
+ 	if (ret) {
+ 		ghvm->vm_status = GH_RM_VM_STATUS_INIT_FAILED;
+ 		dev_warn(ghvm->parent, "Failed to initialize VM: %d\n", ret);
+@@ -574,7 +588,9 @@
+ 	}
+ 	ghvm->vm_status = GH_RM_VM_STATUS_READY;
+ 
++	dev_info(ghvm->parent, "gb-gunyah-start-v1: resources begin\n");
+ 	ret = gh_rm_get_hyp_resources(ghvm->rm, ghvm->vmid, &resources);
++	dev_info(ghvm->parent, "gb-gunyah-start-v1: resources result=%d\n", ret);
+ 	if (ret) {
+ 		dev_warn(ghvm->parent, "Failed to get hypervisor resources for VM: %d\n", ret);
+ 		goto err;
+@@ -590,7 +606,9 @@
+ 		gh_vm_add_resource(ghvm, ghrsc);
+ 	}
+ 
++	dev_info(ghvm->parent, "gb-gunyah-start-v1: start begin\n");
+ 	ret = gh_rm_vm_start(ghvm->rm, ghvm->vmid);
++	dev_info(ghvm->parent, "gb-gunyah-start-v1: start result=%d\n", ret);
+ 	if (ret) {
+ 		dev_warn(ghvm->parent, "Failed to start VM: %d\n", ret);
+ 		goto err;
+@@ -672,6 +690,7 @@
+ 			return -EOVERFLOW;
+ 
+ 		ghvm->dtb_config = dtb_config;
++		dev_info(ghvm->parent, "gb-gunyah-start-v1: dtb-config recorded\n");
+ 
+ 		r = 0;
+ 		break;
+@@ -695,7 +714,9 @@
+ 		if (copy_from_user(&f, argp, sizeof(f)))
+ 			return -EFAULT;
+ 
++		dev_info(ghvm->parent, "gb-gunyah-start-v1: add-function begin type=%u\n", f.type);
+ 		r = gh_vm_add_function_instance(ghvm, &f);
++		dev_info(ghvm->parent, "gb-gunyah-start-v1: add-function result type=%u result=%ld\n", f.type, r);
+ 		break;
+ 	}
+ 	case GH_VM_REMOVE_FUNCTION: {

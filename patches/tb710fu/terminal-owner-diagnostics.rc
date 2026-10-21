@@ -1,0 +1,13 @@
+# Owner development instrumentation, fixed package and MAIN user only.
+# Requires ro.debuggable=1 and the separately installed owner diagnostic APK.
+# Original Terminal stays Google-signed; the test runs with Terminal's UID.
+on property:debug.gb.terminal_prepare=1
+    setprop debug.gb.terminal_prepare 0
+    start gb-terminal-prepare
+
+service gb-terminal-prepare /system/bin/sh -c "/system/bin/am instrument -w --no-hidden-api-checks --user 11 org.googlebook.port.terminalprobe/.TerminalProbe > /data/local/tmp/gb-terminal-diagnostics/prepare.log 2>&1"
+    user root
+    group root log
+    seclabel u:r:shell:s0
+    disabled
+    oneshot

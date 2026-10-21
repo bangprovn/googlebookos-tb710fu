@@ -1,0 +1,120 @@
+--- a/hypervisor/src/gunyah/mod.rs
++++ b/hypervisor/src/gunyah/mod.rs
+@@ -696,8 +696,8 @@
+                 // reason.
+                 #[cfg(any(target_arch = "arm", target_arch = "aarch64"))]
+                 if region.options.purpose == MemoryRegionPurpose::SharedGuestRam {
+-                    if std::env::var_os("DROIDVM_PREPIN_PIPE_FD").is_some() {
+-                        if full_size != (2042u64 << 20) {
++                    if let Some(required) = std::env::var_os("DROIDVM_RAM_POOL_REQUIRED") {
++                        if required.as_os_str() != std::ffi::OsStr::new("1") {
+                             return Err(Error::new(libc::EINVAL));
+                         }
+                         let stats = ram_pool::control(vm_descriptor.as_raw_descriptor(), full_size, false)
+@@ -706,7 +706,11 @@
+                             stats.available_2m, stats.served_2m, stats.held_2m);
+                         mthp::coordinate_owner(full_size, "before_pool_population")
+                             .map_err(|e| Error::new(e.raw_os_error().unwrap_or(libc::EINVAL)))?;
+-                        base::info!("GH-PREPIN2: matching release received; continuing preparation");
++                        if std::env::var_os("DROIDVM_PREPIN_PIPE_FD").is_some() {
++                            base::info!("GH-PREPIN2: matching release received; continuing preparation");
++                        } else {
++                            base::info!("GH-RAM-POOL: automatic preparation; no owner gate requested");
++                        }
+                         // SAFETY: this live RW guest mapping covers full_size bytes.
+                         let prep = unsafe {
+                             mthp::prepare_reserved_region(region.host_addr as *mut u8, full_size)
+--- a/hypervisor/src/gunyah/ram_pool.rs
++++ b/hypervisor/src/gunyah/ram_pool.rs
+@@ -4,7 +4,9 @@
+ use std::io;
+ use std::os::unix::io::AsRawFd;
+ 
+-const WINDOW_BYTES: u64 = 2042 << 20;
++const WINDOWS: [u64; 2] = [506 << 20, 2042 << 20];
++#[cfg(test)]
++const WINDOW_BYTES: u64 = WINDOWS[1];
+ const MAX_PAGES: u32 = 1024; // pool2GiB maximum, units of2MiB
+ const CONTROL: libc::c_ulong = 0xc0204717;
+ 
+@@ -32,16 +34,17 @@
+     io::Error::new(io::ErrorKind::InvalidData, "invalid RAM-pool receipt")
+ }
+ 
+-fn receipt(r: &Request, fd: i32, query: bool) -> io::Result<Stats> {
++fn receipt(r: &Request, fd: i32, bytes: u64, query: bool) -> io::Result<Stats> {
+     if r.vm_fd != fd
+         || r.flags != u32::from(query)
+-        || r.memory_size != WINDOW_BYTES
++        || !WINDOWS.contains(&bytes)
++        || r.memory_size != bytes
+         || r.reserved != 0
+         || r.held_2m > MAX_PAGES
+         || r.available_2m > r.held_2m
+         || r.served_2m > r.held_2m
+         || r.available_2m + r.served_2m > r.held_2m
+-        || (!query && r.available_2m < (WINDOW_BYTES >> 21) as u32)
++        || (!query && r.available_2m < (bytes >> 21) as u32)
+     {
+         return Err(invalid());
+     }
+@@ -53,7 +56,7 @@
+ }
+ 
+ pub fn control(vm_fd: i32, bytes: u64, query: bool) -> io::Result<Stats> {
+-    if vm_fd < 0 || bytes != WINDOW_BYTES {
++    if vm_fd < 0 || !WINDOWS.contains(&bytes) {
+         return Err(io::Error::new(
+             io::ErrorKind::InvalidInput,
+             "RAM-pool scope",
+@@ -74,7 +77,7 @@
+     if ret != 0 {
+         return Err(invalid());
+     }
+-    receipt(&r, vm_fd, query)
++    receipt(&r, vm_fd, bytes, query)
+ }
+ 
+ #[cfg(test)]
+@@ -90,7 +93,7 @@
+             held_2m: 1024,
+             ..Request::default()
+         };
+-        assert!(receipt(&valid, 11, false).is_ok());
++        assert!(receipt(&valid, 11, WINDOW_BYTES, false).is_ok());
+         for field in 0..8 {
+             let mut bad = valid;
+             match field {
+@@ -103,7 +106,7 @@
+                 6 => bad.served_2m = 1,
+                 _ => bad.available_2m = u32::MAX,
+             }
+-            assert!(receipt(&bad, 11, false).is_err());
++            assert!(receipt(&bad, 11, WINDOW_BYTES, false).is_err());
+         }
+         let query = Request {
+             flags: 1,
+@@ -111,8 +114,22 @@
+             served_2m: 1021,
+             ..valid
+         };
+-        let s = receipt(&query, 11, true).unwrap();
++        let s = receipt(&query, 11, WINDOW_BYTES, true).unwrap();
+         assert_eq!((s.available_2m, s.served_2m, s.held_2m), (3, 1021, 1024));
++        let small = Request {
++            memory_size: WINDOWS[0],
++            available_2m: 771,
++            served_2m: 253,
++            ..query
++        };
++        assert!(receipt(&small, 11, WINDOWS[0], true).is_ok());
++        assert!(receipt(&small, 11, WINDOWS[1], true).is_err());
++        let small_bind = Request {
++            flags: 0,
++            served_2m: 0,
++            ..small
++        };
++        assert!(receipt(&small_bind, 11, WINDOWS[0], false).is_ok());
+     }
+ 
+     #[test]

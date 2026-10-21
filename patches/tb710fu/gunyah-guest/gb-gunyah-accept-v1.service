@@ -1,0 +1,20 @@
+[Unit]
+Description=Guarded Googlebook guest memory accept transport
+After=local-fs.target systemd-modules-load.service
+Before=multi-user.target user@1000.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/googlebook-port/guest-accept-2c72b99ab59bd6d0/gb-guest-accept-load /usr/local/lib/googlebook-port/guest-accept-2c72b99ab59bd6d0/profile.json
+RemainAfterExit=yes
+TimeoutStartSec=15
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+CapabilityBoundingSet=CAP_SYS_MODULE
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

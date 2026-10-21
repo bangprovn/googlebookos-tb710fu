@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "scope": "Whitelist-reduced native Terminal tab topology; no title, console text, identifiers or command-execution proof",
+  "original_terminal_apk_sha256": "8bbea541e6f45f8cf530eb78d9b50830113458a6e4220a5e4de9966d0fae5372",
+  "source_receipt": "artifacts/device/first-boot-20261013/guest-native-backing-budget-20261020-v1/terminal-fresh-session-20261020-v1/startup-controls.json",
+  "source_receipt_sha256": "a1772e63a85aa5668b9d0fc27c87b4852d74fb5d8a4a0659ae1a71aaee8a24f2",
+  "fixture_sha256": "8a4982389d74d8fbc77313f44e8f6cdc5c37a3b8df53dcd2b43616c596181ac4",
+  "fixture_bytes": 6565,
+  "strip_bottom": 208,
+  "add_touch_target_bottom": 209,
+  "exact_horizontal_adjacency": true,
+  "exact_top_alignment": true,
+  "rounding_cause_proven": false,
+  "guest_execution_verified": false
+}

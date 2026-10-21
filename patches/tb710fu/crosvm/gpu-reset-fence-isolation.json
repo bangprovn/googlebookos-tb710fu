@@ -1,0 +1,154 @@
+{
+  "schema_version": 1,
+  "revision": 1,
+  "state": "blocked_dependency_translation",
+  "scope": "Offline source feasibility and dependency-gap regression only; no production backport produced",
+  "upstream": {
+    "repository": "https://github.com/Droid-VM/crosvm",
+    "branch": "wingpu",
+    "commit": "3a099579ac7b0c42cd249e6bebfe32c8f44e3625",
+    "committed_at": "2026-10-13T17:50:22Z",
+    "url": "https://github.com/Droid-VM/crosvm/commit/3a099579ac7b0c42cd249e6bebfe32c8f44e3625",
+    "changed_files": [
+      "devices/src/virtio/gpu/mod.rs"
+    ],
+    "whole_branch_imported": false
+  },
+  "local_source_head": "849e05f12d5c8d4c36af8e15763986d242cd43b5",
+  "source_inputs": [
+    {
+      "id": "frontend",
+      "path": "artifacts/source/crosvm-android16qpr2-backend/external/crosvm/devices/src/virtio/gpu/mod.rs",
+      "sha256": "74b593f2753435f26824433c7d3288fddd8599e0e80606677e86382cdc9740fe"
+    },
+    {
+      "id": "virtio_gpu",
+      "path": "artifacts/source/crosvm-android16qpr2-backend/external/crosvm/devices/src/virtio/gpu/virtio_gpu.rs",
+      "sha256": "3fb24384db5718bd5965aa7825812dc7f57889922b69369b7a5d8296008a8493"
+    },
+    {
+      "id": "rutabaga",
+      "path": "artifacts/source/crosvm-android16qpr2-backend/external/crosvm/rutabaga_gfx/src/rutabaga_core.rs",
+      "sha256": "edbbd999276dc4ff28f1a2ec9128a44220f3d2adf1762d37df175ffe61300fcb"
+    },
+    {
+      "id": "rutabaga_build",
+      "path": "artifacts/source/crosvm-android16qpr2-backend/external/crosvm/rutabaga_gfx/build.rs",
+      "sha256": "bae44f14001f4da23151614624d6930cbb8d6b2d44e969d92d466880cb10eaf3"
+    },
+    {
+      "id": "virgl_backend",
+      "path": "artifacts/source/crosvm-android16qpr2-backend/external/crosvm/rutabaga_gfx/src/virgl_renderer.rs",
+      "sha256": "6567a1732b8e1bb4032f4f48a4b62953e5aa3bb1143b94b7a4173979220b2cc8"
+    },
+    {
+      "id": "virtio_wl",
+      "path": "artifacts/source/crosvm-android16qpr2-backend/external/crosvm/devices/src/virtio/wl.rs",
+      "sha256": "9c793fcea80ded68da67adb832716f2d1aa4f570d469d9c9c98f533c4312497f"
+    }
+  ],
+  "upstream_allocator": {
+    "url": "https://raw.githubusercontent.com/Droid-VM/crosvm/3a099579ac7b0c42cd249e6bebfe32c8f44e3625/devices/src/virtio/gpu/mod.rs",
+    "file_sha256": "57263f1db41a1faacc33781bd6344851787b8bd078b5a67c894bb9f2459d5c0a",
+    "sha256": "fc9c2aebcb8b484de132ba542d61ecd94db277f8730fa292651c26a25f57fbf2",
+    "copied_verbatim_to_fixture": true,
+    "scope": "Only actual allocate_fence_id method, no production integration"
+  },
+  "fixture_sha256": "a68b0b700a00e6f3203ffbf00d61051718e7fcf827c9da176aeaa5f04cdf4fb1",
+  "python_test_sha256": "43ad74191f6db1518b925c8799b4898e3fd602b53f9b9fe83b7e2af78f7f4325",
+  "dependency_map": [
+    {
+      "site": "Frontend::process_descriptor",
+      "path": "devices/src/virtio/gpu/mod.rs",
+      "behavior": "Proposed upstream commit assigns monotonic renderer IDs but keeps original guest ID in response header",
+      "translation_required": "Retain bounded guest/ring/generation identity for every externally addressed fence; lifecycle semantics not designed here"
+    },
+    {
+      "site": "Frontend::process_gpu_command CmdSubmit3d",
+      "path": "devices/src/virtio/gpu/mod.rs",
+      "behavior": "Reads raw guest num_in_fences IDs, passes them unchanged to VirtioGpu::submit_command",
+      "problem": "IDs no longer name the renderer fences after isolated remapping"
+    },
+    {
+      "site": "Frontend::process_resource_bridge GetFence",
+      "path": "devices/src/virtio/gpu/mod.rs",
+      "behavior": "Forwards raw seqno unchanged to VirtioGpu::export_fence",
+      "problem": "Wrong or missing fence lookup after isolated remapping"
+    },
+    {
+      "site": "VirtioGpu::export_fence and submit_command",
+      "path": "devices/src/virtio/gpu/virtio_gpu.rs",
+      "behavior": "Direct forwarding to Rutabaga; no guest-to-renderer translation"
+    },
+    {
+      "site": "Rutabaga create/export/submit/destroy fence paths",
+      "path": "rutabaga_gfx/src/rutabaga_core.rs",
+      "behavior": "Renderer fence ID is the shareable-fence key under fence_passing_option1; other configurations forward numeric IDs to renderer",
+      "problem": "Export, input-fence and destruction identity/lifetime must remain consistent"
+    },
+    {
+      "site": "VirglRendererContext::submit_cmd and VirglRenderer::export_fence",
+      "path": "rutabaga_gfx/src/virgl_renderer.rs",
+      "behavior": "Unstable API passes raw IDs to virgl_renderer_submit_cmd2 and virgl_renderer_export_fence; stable variant refuses unsupported input/export paths"
+    },
+    {
+      "site": "virtio-wl VFD_SEND_KIND_VIRTGPU_FENCE",
+      "path": "devices/src/virtio/wl.rs",
+      "behavior": "Actual consumer requests ResourceRequest::GetFence with guest-supplied seqno; signaled fence uses special seqno0"
+    },
+    {
+      "site": "GPU feature advertisement and build flags",
+      "path": "devices/src/virtio/gpu/mod.rs; rutabaga_gfx/build.rs",
+      "behavior": "3D frontend advertises FENCE_PASSING. Virgl disables option1; unstable virgl APIs depend on pkgconfig. Wrappers do not establish all affected APIs are unreachable."
+    }
+  ],
+  "blockers": [
+    "Single-file ID renumbering leaves consumer ID lookups untranslated, potentially selecting a different submission rather than merely failing",
+    "Safe translation requires identity/ring/reset generation and retirement/retention rules across export, input fences and special seqno0; this exceeds isolated reset patch scope",
+    "Actual installed VMM build configuration and binary equivalence to inspected source are unverified; disabling supported APIs is not an accepted shortcut"
+  ],
+  "license": "BSD-3-Clause for the copied upstream allocator and extracted inherited crosvm methods. Complete pinned crosvm LICENSE conditions/disclaimer embedded verbatim as fixture comments, retaining both the 2017 LICENSE and 2018 file attribution. No relicensing of other mixed-license fork files.",
+  "host_validation": {
+    "command": "PYTHONDONTWRITEBYTECODE=1 python3 tests/gpu_reset_fence_isolation.py -v",
+    "state": "passed",
+    "scope": "Actual extracted local forwarding methods and exact upstream allocator, mocked IPC/renderer handles; no GPU, descriptor fences, native VMM, wire serialization or full reset integration",
+    "python_tests_passed": 3,
+    "actual_function_rust_tests_passed": 14,
+    "rust_configurations": [
+      "virgl-style forwarding (fence_passing_option1 disabled)",
+      "shareable-fence lookup (fence_passing_option1 enabled)"
+    ],
+    "rustc_version": "rustc 1.93.1 (01f6ddf75 2026-02-11)",
+    "warnings_denied": true,
+    "scenarios": [
+      "Unchanged guest/renderer-ID export succeeds",
+      "Upstream allocator changes guest42 to renderer1; raw export42 is invalid while translated renderer1 succeeds",
+      "Overlapping guest-ID1 for second submission exports first submission renderer1 instead of second renderer2",
+      "Unchanged input IDs reach existing renderer entry",
+      "Remapped input42 fails while renderer1 succeeds",
+      "Unrelated buffer and unknown-context controls",
+      "Exact upstream global32-bit/context64-bit allocator overflow refusal"
+    ]
+  },
+  "patch_created": false,
+  "source_mutated": false,
+  "native_build_executed": false,
+  "build_verified": false,
+  "installed": false,
+  "installed_binary_equivalence_verified": false,
+  "runtime_verified": false,
+  "device_access": false,
+  "full_port_verified": false,
+  "license_url": "https://github.com/Droid-VM/crosvm/blob/3a099579ac7b0c42cd249e6bebfe32c8f44e3625/LICENSE",
+  "license_source": {
+    "spdx_identifier": "BSD-3-Clause",
+    "commit": "3a099579ac7b0c42cd249e6bebfe32c8f44e3625",
+    "url": "https://raw.githubusercontent.com/Droid-VM/crosvm/3a099579ac7b0c42cd249e6bebfe32c8f44e3625/LICENSE",
+    "sha256": "c1d1dea1a52ff09809c990efd95cbcd0dd98f9bd52a58d5c09cfbac218e32511",
+    "bytes": 1539,
+    "local_matching_copy": "artifacts/source/crosvm-android16qpr2-backend/external/crosvm/LICENSE",
+    "verified_against_pinned_public_source": true,
+    "fixture_embedded_verbatim": true,
+    "file_attribution_retained": "Copyright 2018 The ChromiumOS Authors"
+  }
+}

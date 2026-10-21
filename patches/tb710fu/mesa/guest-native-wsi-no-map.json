@@ -1,0 +1,142 @@
+{
+  "schema_version": 1,
+  "revision": 3,
+  "source_version": "25.0.7-2+deb13u1",
+  "base_driver_sha256": "8d34c42f69d99e372d824ff0b970b2e775d325d43d2ed621ab5d1545b268c698",
+  "files": [
+    {
+      "path": "src/virtio/vulkan/vn_image.h",
+      "base_path": "artifacts/source/mesa-25.0.7-debian-pool-v1/mesa-25.0.7/src/virtio/vulkan/vn_image.h",
+      "sha256": "69910645959400b61712efd3ab6063ae5fa33a5985cde833a70687dfb90ac51b",
+      "result_sha256": "d4abc292a72463bb80ef10d33e99e6783e6eb1cbfa3c5ee753934fb2e8603e67"
+    },
+    {
+      "path": "src/virtio/vulkan/vn_wsi.c",
+      "base_path": "artifacts/device/first-boot-20261013/guest-swapchain-budget-20261020-v1/explicit-feedback-build-v1/vn_wsi.c",
+      "sha256": "fd05485569c8681de4069aa4fb7b2d5c30fa228d47826e1254cc5f9651fb11f5",
+      "result_sha256": "8ecff167510d0a4ab9caa9828a934a3e40ebe1763bd366085a77649999254735"
+    },
+    {
+      "path": "src/virtio/vulkan/vn_device_memory.h",
+      "base_path": "artifacts/source/mesa-25.0.7-debian-pool-v1/mesa-25.0.7/src/virtio/vulkan/vn_device_memory.h",
+      "sha256": "fba1dd25f0326d11a93001fe505ea0a2cdbee554830086b8ba76b7c416170258",
+      "result_sha256": "137d6365dfcfeebc93259097eb9883f38c9915e9679b0098a3e371ae54b1270a"
+    },
+    {
+      "path": "src/virtio/vulkan/vn_device_memory.c",
+      "base_path": "artifacts/source/mesa-25.0.7-debian-pool-v1/mesa-25.0.7/src/virtio/vulkan/vn_device_memory.c",
+      "sha256": "bd0a328e3f32305e03e89a5085dd3d0db5fcc9da13c9dcee0277cd4aa4f6156d",
+      "result_sha256": "3750e1b8957f78eb4468c0e449e0429ae1147252edf698d43269e3d001a0186a"
+    }
+  ],
+  "patch_sha256": "b126be3c5b63745cb8a6f55b749e9da8063127cb4db6ed90cfa1242a5617406c",
+  "opt_in": {
+    "GB_VENUS_NATIVE_WSI_NO_MAP_V1": "private-linear-rgbx-v1"
+  },
+  "required_existing_mode": {
+    "GB_WSI_EXPLICIT_FEEDBACK_V1": "qualified-linear-rgbx-v1"
+  },
+  "scope": "Private native LINEAR RGB(A/X) common-WSI memory BO export without unnecessary guest CPU registration; ordinary Vulkan allocations and kernel budgets unchanged",
+  "kernel_quotas_changed": false,
+  "host_image_slots_changed": false,
+  "memory_type_advertisement_changed": false,
+  "host_vulkan_allocation_info_changed": false,
+  "unexpected_private_map_result": "VK_ERROR_MEMORY_MAP_FAILED",
+  "qualified_bo_flags": [
+    "USE_SHAREABLE",
+    "USE_CROSS_DEVICE when existing renderer supports it"
+  ],
+  "qualified_bo_flag_removed": "USE_MAPPABLE only for fully qualified private internal native WSI memory",
+  "required_external_qualification": {
+    "base_guest_driver_sha256": "8d34c42f69d99e372d824ff0b970b2e775d325d43d2ed621ab5d1545b268c698",
+    "host_renderer_sha256": "156a258fe636cc0c1b1232cbb89871ba6dbaa7811bbe0f3cafa5695c671c1f71",
+    "compositor_profile": "guest-virgl-linear-modifiers.json",
+    "controller_must_pin_full_private_compositor_closure": true,
+    "window_system": "Private controller must select Wayland; classifier does not independently establish a Wayland display or completed feedback callbacks."
+  },
+  "preserved": [
+    "8d acquire-syncfd vn_wsi.c overlay",
+    "Ordinary application textures/uniform buffers and general HOST_VISIBLE allocations",
+    "Default/copy/software/prime-blit memory mapping",
+    "DMA-BUF export handle types and SHAREABLE/CROSS_DEVICE flag derivation",
+    "Vulkan allocation flags and published memory types",
+    "Existing source/destination image and Gunyah byte/span guards"
+  ],
+  "license": "MIT; original complete Mesa notices retained",
+  "host_helper_verified": true,
+  "build_verified": true,
+  "installed": false,
+  "runtime_verified": true,
+  "presentation_verified": false,
+  "full_port_verified": false,
+  "support_inputs": {
+    "artifacts/source/mesa-25.0.7-debian-pool-v1/mesa-25.0.7/src/virtio/vulkan/vn_renderer_virtgpu.c": "64186d5e4924a0b34a9803c87857a748f893153d5e94dc78de037add7a79e905",
+    "artifacts/source/mesa-25.0.7-debian-pool-v1/mesa-25.0.7/src/vulkan/wsi/wsi_common_drm.c": "c47c7deacf859c461e58881149af384611fb56eb4304339fdef39e73923afe35",
+    "artifacts/source/mesa-25.0.7-debian-pool-v1/mesa-25.0.7/src/vulkan/wsi/wsi_common.c": "8adf521c3dda82cd798bb928b7459e3bf9d9318f66159d07bdf7587bee741bd9",
+    "artifacts/source/mesa-25.0.7-debian-pool-v1/mesa-25.0.7/src/vulkan/runtime/vk_image.c": "f5d2d02397a2ec9652d0a80e5bc812c0f032e9c97de799886fd3d5d246ba8cf4",
+    "artifacts/source/droidvm-guest-additions-20261019-v1/virtio_gpu/virtgpu_vram.c": "c6a6f856c6ea060dcfeb86502b05f408d444dab2cb00c0bbcead729fd5522bd5",
+    "artifacts/source/droidvm-guest-additions-20261019-v1/virtio_gpu/virtgpu_prime.c": "fedb6ca1d9ac06447f755a944e82e309d5dd96fe79b9ab560d4682a8d28d2f74"
+  },
+  "qualification": [
+    "Exact process token and existing8d qualified explicit feedback token",
+    "Common WSI private-memory allocation tag and dedicated exact image",
+    "Image internally created by vn_wsi_create_image; external swapchain aliases never inherit bit",
+    "Native nonsoftware/nonprime host3D renderer path",
+    "Actual explicit DRM_FORMAT_MOD_LINEAR; RGBA8/BGRA8UNORM2D singlemip/layer/sample",
+    "DMA_BUF-only image and allocation export; DMA_BUF renderer handle type",
+    "No imported allocation, existing image memory, protected/unknown image flags",
+    "Nonzero <=32MiB allocation and bounded2Dpixel footprint"
+  ],
+  "limitations": [
+    "Source and host stand-ins do not prove guest PRIME/EGL GPU import, syncfd behavior or native presentation with nonmappable BOs.",
+    "Eight host bridge slots and4096 Gunyah spans remain; other simultaneous workloads may still saturate them.",
+    "Opportunistic suppression applies only to qualified private image BO transport; ordinary mapped textures/uniforms still consume registration spans.",
+    "Memory-type advertisement and native VkMemoryAllocateInfo are unchanged; Vulkan memory is private common-WSI storage not exposed as an application VkDeviceMemory.",
+    "Unexpected vkMapMemory of private storage refuses before any renderer BO creation or remapping; no automatic fallback.",
+    "Exact8d feedback token and resultingLINEAR image are checked, but actual completed Wayland feedback/device evidence is enforced by the pinned8d allocation selector and controller; explicitly opted-in X11 common-WSI could otherwise meet classifier fields."
+  ],
+  "host_validation": {
+    "command": "PYTHONDONTWRITEBYTECODE=1 python3 tests/guest_native_wsi_no_map.py",
+    "tests_passed": 8,
+    "compiled_scenarios": 7,
+    "sanitizers": [
+      "AddressSanitizer",
+      "UndefinedBehaviorSanitizer"
+    ],
+    "patch_apply_reverse_exact": true,
+    "actual_functions": [
+      "gb_native_wsi_no_map_policy",
+      "vn_device_memory_bo_init",
+      "vn_AllocateMemory",
+      "vn_MapMemory",
+      "virtgpu_bo_blob_flags"
+    ],
+    "scope": "Actual patched Mesa functions and structs with GPU/device/allocation/transport stand-ins; Vulkan/DRM headers from pinned Mesa source; no full Mesa build or device validation",
+    "regressions": {
+      "tests/guest_wayland_explicit_feedback.py": 7,
+      "feedback_helper_scenarios": 39
+    }
+  },
+  "build_notes": [
+    "Initial compile found-Werror=switch on private Mesa structure tag; revision2 handles that tag before the standard Vulkan enum switch."
+  ],
+  "selection_diagnostic": {
+    "marker": "GB-VENUS-NATIVE-WSI-NO-MAP: selected",
+    "scope": "Successful qualified private renderer BO creation only",
+    "maximum_records_per_process": 16,
+    "fields": [
+      "allocation bytes",
+      "actual BO transport property bits",
+      "actual export handle bits",
+      "cpu_mappable=false"
+    ],
+    "default_output_changed": false,
+    "identifiers_collected": false
+  },
+  "candidate_driver_sha256": "b6e337f61519d1e38e5233abeff3d0dd8c9858fe11a647d0061f8fcfb6d2fe35",
+  "candidate_driver_bytes": 1407840,
+  "build_provenance": "artifacts/device/first-boot-20261013/guest-swapchain-budget-20261020-v1/native-wsi-no-map-build-v1/retry-v3/provenance.json",
+  "abi_preserved": true,
+  "runtime_scope": "Qualified private BO allocation path and owned API/compute workloads only; concurrent native animation/recovery fails sampled visual checks",
+  "runtime_report": "docs/tb710fu-native-no-map-20261020.json"
+}

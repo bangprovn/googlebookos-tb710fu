@@ -1,0 +1,308 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Owner diagnostic framing over an already inherited console-input capability.
+// No pathname lookup, permission grant, firmware or privileged operation.
+use std::fs::File;
+use std::io;
+use std::os::unix::fs::{FileTypeExt, MetadataExt};
+use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
+use std::time::{Duration, Instant};
+
+fn invalid(message: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+fn poll(fd: RawFd, milliseconds: i32) -> io::Result<i16> {
+    let mut p = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: p is a live initialized pollfd, with exactly one element.
+    let n = unsafe { libc::poll(&mut p, 1, milliseconds) };
+    if n < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if p.revents & (libc::POLLERR | libc::POLLNVAL) != 0 {
+        return Err(invalid("invalid diagnostic input descriptor"));
+    }
+    Ok(p.revents)
+}
+
+fn line(fd: RawFd, deadline: Instant) -> io::Result<String> {
+    let mut bytes = Vec::new();
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "pre-pin input deadline",
+            ));
+        }
+        let events = match poll(
+            fd,
+            remaining.as_millis().max(1).min(i32::MAX as u128) as i32,
+        ) {
+            Ok(events) => events,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        if events & libc::POLLIN == 0 {
+            if events & libc::POLLHUP != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "diagnostic sender closed",
+                ));
+            }
+            continue;
+        }
+        let mut byte = 0u8;
+        // SAFETY: byte has one writable byte; descriptor is owned and nonblocking.
+        let n = unsafe { libc::read(fd, (&mut byte as *mut u8).cast(), 1) };
+        if n < 0 {
+            let e = io::Error::last_os_error();
+            if matches!(
+                e.kind(),
+                io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock
+            ) {
+                continue;
+            }
+            return Err(e);
+        }
+        if n == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "diagnostic sender closed",
+            ));
+        }
+        if byte == b'\n' {
+            return String::from_utf8(bytes).map_err(|_| invalid("non-ASCII diagnostic frame"));
+        }
+        if bytes.len() == 127 || !byte.is_ascii() {
+            return Err(invalid("diagnostic frame exceeds its bound"));
+        }
+        bytes.push(byte);
+    }
+}
+
+struct Restore<'a> {
+    file: &'a File,
+    flags: i32,
+    active: bool,
+}
+impl Restore<'_> {
+    fn finish(&mut self) -> io::Result<()> {
+        // SAFETY: file remains live and flags came from F_GETFL on this description.
+        if unsafe { libc::fcntl(self.file.as_raw_fd(), libc::F_SETFL, self.flags) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        self.active = false;
+        Ok(())
+    }
+}
+impl Drop for Restore<'_> {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = self.finish();
+        }
+    }
+}
+
+/// Consume only request/release frames. Leave subsequent guest stdin untouched
+/// and restore the shared description's flags on success and failure.
+pub fn coordinate<F>(fd: RawFd, uid: u32, bytes: u64, timeout: Duration, ready: F) -> io::Result<()>
+where
+    F: FnOnce(&str),
+{
+    if !(3..4096).contains(&fd) {
+        return Err(invalid("invalid inherited input number"));
+    }
+    // SAFETY: duplicate an inherited descriptor; do not close or replace the original.
+    let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
+    if duplicate < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: duplicate is a newly owned descriptor.
+    let file = unsafe { File::from_raw_fd(duplicate) };
+    let m = file.metadata()?;
+    if !m.file_type().is_fifo() || m.uid() != uid || m.mode() & 0o777 != 0o600 || m.nlink() != 1 {
+        return Err(invalid(
+            "expected one owned anonymous diagnostic input pipe",
+        ));
+    }
+    // SAFETY: these fcntl operations access flags on a live owned descriptor.
+    let flags = unsafe { libc::fcntl(duplicate, libc::F_GETFL) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if flags & libc::O_ACCMODE != libc::O_RDONLY {
+        return Err(invalid("diagnostic input is not readonly"));
+    }
+    // SAFETY: nonblocking prevents a competing read or close from defeating the deadline.
+    if unsafe { libc::fcntl(duplicate, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut restore = Restore {
+        file: &file,
+        flags,
+        active: true,
+    };
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .ok_or_else(|| invalid("invalid gate deadline"))?;
+    let result = (|| {
+        let request = line(duplicate, deadline)?;
+        let fields: Vec<_> = request.split(' ').collect();
+        if fields.len() != 4
+            || fields[0] != "GB-PREPIN2"
+            || fields[1] != "REQUEST"
+            || fields[2].parse::<u64>().ok() != Some(bytes)
+            || fields[3].len() != 64
+            || !fields[3].bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return Err(invalid("invalid diagnostic request"));
+        }
+        let token = fields[3];
+        if poll(duplicate, 0)? != 0 {
+            return Err(invalid("prequeued release or closed sender"));
+        }
+        ready(token);
+        let release = line(duplicate, deadline)?;
+        if release != format!("GB-PREPIN2 RELEASE {token}") {
+            return Err(invalid("release does not match the announced request"));
+        }
+        Ok(())
+    })();
+    let restored = restore.finish();
+    result.and(restored)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    fn pipe() -> (File, File) {
+        let mut fds = [-1; 2];
+        // SAFETY: fds has two writable elements; success returns two owned fds.
+        assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
+        unsafe { (File::from_raw_fd(fds[0]), File::from_raw_fd(fds[1])) }
+    }
+    fn uid(file: &File) -> u32 {
+        file.metadata().unwrap().uid()
+    }
+    #[test]
+    fn fresh_release_preserves_guest_bytes_and_descriptor_flags() {
+        let (mut input, mut sender) = pipe();
+        let token = "a".repeat(64);
+        writeln!(sender, "GB-PREPIN2 REQUEST 2141192192 {token}").unwrap();
+        let flags = unsafe { libc::fcntl(input.as_raw_fd(), libc::F_GETFL) };
+        coordinate(
+            input.as_raw_fd(),
+            uid(&input),
+            2141192192,
+            Duration::from_secs(1),
+            |s| {
+                assert_eq!(s, token);
+                writeln!(sender, "GB-PREPIN2 RELEASE {s}").unwrap();
+                sender.write_all(b"guest stdin kept\n").unwrap();
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            unsafe { libc::fcntl(input.as_raw_fd(), libc::F_GETFL) },
+            flags
+        );
+        let mut kept = [0; 17];
+        input.read_exact(&mut kept).unwrap();
+        assert_eq!(&kept, b"guest stdin kept\n");
+    }
+    #[test]
+    fn premature_stale_malformed_and_wrong_size_frames_refuse() {
+        for request in [
+            "bad".to_string(),
+            format!("GB-PREPIN2 REQUEST 1 {}", "a".repeat(64)),
+        ] {
+            let (input, mut sender) = pipe();
+            writeln!(sender, "{request}").unwrap();
+            assert!(
+                coordinate(
+                    input.as_raw_fd(),
+                    uid(&input),
+                    2141192192,
+                    Duration::from_secs(1),
+                    |_| panic!("bad request announced")
+                )
+                .is_err()
+            );
+        }
+        let (input, mut sender) = pipe();
+        let token = "a".repeat(64);
+        writeln!(
+            sender,
+            "GB-PREPIN2 REQUEST 2141192192 {token}\nGB-PREPIN2 RELEASE {token}"
+        )
+        .unwrap();
+        assert!(
+            coordinate(
+                input.as_raw_fd(),
+                uid(&input),
+                2141192192,
+                Duration::from_secs(1),
+                |_| panic!("premature release accepted")
+            )
+            .is_err()
+        );
+        let (input, mut sender) = pipe();
+        writeln!(sender, "GB-PREPIN2 REQUEST 2141192192 {token}").unwrap();
+        assert!(
+            coordinate(
+                input.as_raw_fd(),
+                uid(&input),
+                2141192192,
+                Duration::from_secs(1),
+                |_| {
+                    writeln!(sender, "GB-PREPIN2 RELEASE {}", "b".repeat(64)).unwrap();
+                }
+            )
+            .is_err()
+        );
+    }
+    #[test]
+    fn timeout_eof_foreign_owner_and_non_pipe_refuse() {
+        let (input, sender) = pipe();
+        assert_eq!(
+            coordinate(
+                input.as_raw_fd(),
+                uid(&input),
+                1,
+                Duration::from_millis(1),
+                |_| {}
+            )
+            .unwrap_err()
+            .kind(),
+            io::ErrorKind::TimedOut
+        );
+        drop(sender);
+        assert!(
+            coordinate(
+                input.as_raw_fd(),
+                uid(&input),
+                1,
+                Duration::from_millis(1),
+                |_| {}
+            )
+            .is_err()
+        );
+        assert!(
+            coordinate(
+                input.as_raw_fd(),
+                uid(&input).wrapping_add(1),
+                1,
+                Duration::ZERO,
+                |_| {}
+            )
+            .is_err()
+        );
+        let f = tempfile::tempfile().unwrap();
+        assert!(coordinate(f.as_raw_fd(), uid(&f), 1, Duration::ZERO, |_| {}).is_err());
+    }
+}

@@ -1,0 +1,38 @@
+[package]
+name = "gb-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+gb-avb.workspace = true
+gb-boot.workspace = true
+gb-tools.workspace = true
+gb-framework.workspace = true
+gb-vintf.workspace = true
+gb-image.workspace = true
+gb-selinux.workspace = true
+gb-core.workspace = true
+gb-config.workspace = true
+gb-firmware.workspace = true
+gb-compat.workspace = true
+gb-build.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+clap.workspace = true
+ctrlc.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[[bin]]
+name = "gb"
+path = "src/main.rs"
+
+[dev-dependencies]
+tempfile.workspace = true
+zip.workspace = true
+crc32fast.workspace = true
+sha2.workspace = true
+toml.workspace = true

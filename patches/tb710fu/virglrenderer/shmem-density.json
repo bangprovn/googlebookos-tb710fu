@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "path": "artifacts/source/crosvm-android16qpr2-backend/external/virglrenderer/src/venus/vkr_context.c",
+  "sha256": "9537bf89284680e23b0c0ece9eeb0ca202d65a64bce371387a27b341a398aa8a",
+  "result_sha256": "d17eb2bb5e4188e3c8f22071109c200d8c221635c60d125d03bd9be6920a9571",
+  "patch_sha256": "8c73b25104aa303c2de306d435b7296c04f075dd16e2c42d0c4478b38c433a41",
+  "revision": "718f00f8b0483112f804925cf51576a8cade8046",
+  "license": "MIT per retained source header",
+  "scope": "Explicit host allocation policy only: aligned same-memfd mappings and bounded best-effort PMD collapse before export; existing Gunyah guards unchanged",
+  "installed": false,
+  "runtime_verified": false,
+  "gpu_work_verified": false,
+  "limits": {
+    "minimum_bytes": 2097152,
+    "maximum_bytes": 67108864,
+    "host_page_bytes": 4096,
+    "maximum_advice_calls_per_resource": 32,
+    "passes": 1,
+    "deadline_ms_between_syscalls": 1000,
+    "diagnostic_resources_per_process": 16
+  },
+  "notes": [
+    "One in-progress kernel syscall is not preempted by the between-call deadline.",
+    "MADV_COLLAPSE success is not proof of the final pinned SG list.",
+    "Existing optional SHM pool route and guest protocol are unchanged."
+  ],
+  "host_unit_verified": true,
+  "host_unit_test": "tests/venus_shmem_density.py",
+  "device_control_report": "docs/tb710fu-shmem-density-20261020.json",
+  "arm64_build_verified": true,
+  "renderer_sha256": "3f0099d68d5642f96ee2e546451b7a7ccb6ffc7a04fdb58d6733b04472563054",
+  "abi_change": {
+    "undefined_added": [
+      "madvise@LIBC"
+    ],
+    "provider_verified": true,
+    "needed_and_exports_unchanged": true
+  }
+}

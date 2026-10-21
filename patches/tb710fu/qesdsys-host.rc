@@ -1,0 +1,17 @@
+# Candidate integration; requires qesdsys-host.cil, original signed stock APK,
+# original framework VINTF fragment, and the owner-built host.jar. No APK install.
+on property:sys.boot_completed=1 && property:ro.build.fingerprint=Dell/mica/mica:17/CL3B.260622.273.R1/16471258:user/release-keys && property:ro.vendor.build.fingerprint=Lenovo/TB710FU/TB710FU:16/BP2A.250605.031.A3/ZUI_17.5.04.059_260327_ROW:user/release-keys
+    start gb-qesdsys
+
+# Deliberately absent boot-image path, with image compilation disabled. Physical
+# preflight must confirm interpreted startup without executable /data mappings.
+service gb-qesdsys /system/bin/app_process64 -Ximage:/system_ext/gb-qesdsys/no-boot-image.art -Xnoimage-dex2oat -Xusejit:false -Xint /system/bin --nice-name=gb-qesdsys org.googlebook.port.qesdsys.QesdSysHost /system_ext/gb-qesdsys/FrameworksUtilsSysService.apk e7de3d389b3a04b7cba5ae7007cc3e7e30091e9d5e17573e171039e5165570a8 Dell/mica/mica:17/CL3B.260622.273.R1/16471258:user/release-keys
+    class late_start
+    user system
+    group system
+    seclabel u:r:gb_qesdsys:s0
+    setenv CLASSPATH /system_ext/framework/gb-qesdsys-host.jar
+    setenv LD_LIBRARY_PATH /system_ext/lib64/gb-qesdsys
+    stdio_to_kmsg
+    disabled
+    oneshot

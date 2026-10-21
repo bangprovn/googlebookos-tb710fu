@@ -1,0 +1,12 @@
+# Owner diagnostic control of the existing kernel shmem THP policy.
+# No automatic boot action: the host must stop Terminal, verify no VM is
+# running, record the current policy, and restore it after the experiment.
+# "advise" permits huge pages only for explicitly advised shmem mappings;
+# it neither reserves memory nor guarantees huge-page allocation.
+on property:debug.gb.vm_shmem_policy=advise
+    setprop debug.gb.vm_shmem_policy 0
+    write /sys/kernel/mm/transparent_hugepage/shmem_enabled advise
+
+on property:debug.gb.vm_shmem_policy=never
+    setprop debug.gb.vm_shmem_policy 0
+    write /sys/kernel/mm/transparent_hugepage/shmem_enabled never

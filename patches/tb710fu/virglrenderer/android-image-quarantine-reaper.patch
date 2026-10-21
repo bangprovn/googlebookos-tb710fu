@@ -1,0 +1,122 @@
+--- a/src/gb_android_image_bridge.h
++++ b/src/gb_android_image_bridge.h
+@@ -11,0 +12 @@
++#include <pthread.h>
+@@ -160 +161,42 @@
+-static void gb_android_image_destroy(struct gb_android_image *g)
++/* A vrend resource relinquishes g exactly once at destroy, even when work is
++ * pending. The bounded registry retains the complete object after that owner
++ * disappears; no caller retries a raw pointer. ACTIVE operations still require
++ * virgl's existing single GL-owner thread/resource-reference contract.
++ * Registry bookkeeping and opportunistic passes tolerate concurrent reapers.
++ */
++enum gb_image_owner { GB_IMAGE_FREE, GB_IMAGE_ACTIVE, GB_IMAGE_QUARANTINED, GB_IMAGE_REAPING };
++struct gb_image_entry { struct gb_android_image *image; enum gb_image_owner owner; };
++static struct gb_image_entry gb_image_registry[GB_IMAGE_SLOTS];
++static pthread_mutex_t gb_image_registry_lock = PTHREAD_MUTEX_INITIALIZER;
++static atomic_flag gb_image_reaper_busy = ATOMIC_FLAG_INIT;
++
++static bool gb_image_register(struct gb_android_image *g)
++{
++   bool found=false;
++   pthread_mutex_lock(&gb_image_registry_lock);
++   for (unsigned i=0;i<GB_IMAGE_SLOTS;i++) if (gb_image_registry[i].owner==GB_IMAGE_FREE) {
++      gb_image_registry[i]=(struct gb_image_entry){g,GB_IMAGE_ACTIVE};found=true;break;
++   }
++   pthread_mutex_unlock(&gb_image_registry_lock);
++   return found;
++}
++static bool gb_image_claim_active(struct gb_android_image *g, unsigned *slot)
++{
++   bool found=false;
++   pthread_mutex_lock(&gb_image_registry_lock);
++   for (unsigned i=0;i<GB_IMAGE_SLOTS;i++)
++      if (gb_image_registry[i].owner==GB_IMAGE_ACTIVE && gb_image_registry[i].image==g) {
++         gb_image_registry[i].owner=GB_IMAGE_REAPING;*slot=i;found=true;break;
++      }
++   pthread_mutex_unlock(&gb_image_registry_lock);
++   return found;
++}
++static void gb_image_defer(unsigned slot)
++{
++   pthread_mutex_lock(&gb_image_registry_lock);
++   if (gb_image_registry[slot].owner==GB_IMAGE_REAPING && gb_image_registry[slot].image)
++      gb_image_registry[slot].owner=GB_IMAGE_QUARANTINED;
++   pthread_mutex_unlock(&gb_image_registry_lock);
++}
++
++static void gb_android_image_dispose(struct gb_android_image *g)
+@@ -163,6 +204,0 @@
+-   /* Never free storage still referenced by an incomplete submission. Keep
+-    * its slot and <=64 MiB of bounded backing quarantined until process exit. */
+-   if (g->pending && (!g->GetFenceStatus || g->GetFenceStatus(g->device, g->fence) != VK_SUCCESS)) {
+-      gb_image_log("quarantine_pending", -1, g->width, g->height);
+-      return;
+-   }
+@@ -184,0 +221,14 @@
++}
++
++/* Keep the slot reserved throughout all native teardown. Clear the registry
++ * pointer before freeing it, while REAPING excludes admission and other passes. */
++static bool gb_image_finish(unsigned slot, struct gb_android_image *g)
++{
++   pthread_mutex_lock(&gb_image_registry_lock);
++   bool owned=gb_image_registry[slot].owner==GB_IMAGE_REAPING && gb_image_registry[slot].image==g;
++   if (owned) gb_image_registry[slot].image=NULL;
++   pthread_mutex_unlock(&gb_image_registry_lock);
++   if (!owned) return false;
++   gb_android_image_dispose(g);
++   pthread_mutex_lock(&gb_image_registry_lock);
++   gb_image_registry[slot].owner=GB_IMAGE_FREE;
+@@ -185,0 +236,45 @@
++   pthread_mutex_unlock(&gb_image_registry_lock);
++   return true;
++}
++
++/* No background thread, waiting for GPU work or quota increase. A busy pass
++ * returns immediately. A pass visits each of eight slots once and queries an
++ * owned pending fence at most once. Errors/NOT_READY/missing query stay owned. */
++static unsigned gb_android_image_reap(void)
++{
++   if (atomic_flag_test_and_set_explicit(&gb_image_reaper_busy,memory_order_acquire)) return 0;
++   unsigned reaped=0;
++   for (unsigned i=0;i<GB_IMAGE_SLOTS;i++) {
++      struct gb_android_image *g=NULL;
++      pthread_mutex_lock(&gb_image_registry_lock);
++      if (gb_image_registry[i].owner==GB_IMAGE_QUARANTINED) {
++         g=gb_image_registry[i].image;gb_image_registry[i].owner=GB_IMAGE_REAPING;
++      }
++      pthread_mutex_unlock(&gb_image_registry_lock);
++      if (!g) continue;
++      if (g->pending && g->GetFenceStatus && g->device && g->fence &&
++          g->GetFenceStatus(g->device,g->fence)==VK_SUCCESS) {
++         uint32_t width=g->width,height=g->height;
++         if (gb_image_finish(i,g)) {reaped++;gb_image_log("quarantine_reaped",0,width,height);}
++      } else gb_image_defer(i);
++   }
++   atomic_flag_clear_explicit(&gb_image_reaper_busy,memory_order_release);
++   return reaped;
++}
++
++static void gb_android_image_destroy(struct gb_android_image *g)
++{
++   if (!g) return;
++   unsigned slot;
++   if (!gb_image_claim_active(g,&slot)) return;
++   gb_android_image_reap();
++   /* No remaining vrend owner can refresh or destroy this object after this
++    * transfer. Retain all native handles, FDs and backing until proven complete. */
++   if (g->pending && (!g->GetFenceStatus || !g->device || !g->fence ||
++                     g->GetFenceStatus(g->device,g->fence)!=VK_SUCCESS)) {
++      uint32_t width=g->width,height=g->height;
++      gb_image_defer(slot);
++      gb_image_log("quarantine_pending",-1,width,height);
++      return;
++   }
++   gb_image_finish(slot,g);
+@@ -220,0 +316 @@
++   gb_android_image_reap();
+@@ -226,0 +323,3 @@
++   if (!gb_image_register(g)) {
++      free(g);atomic_fetch_sub(&gb_image_slots,1);gb_image_log("registry_budget",ENOMEM,w,h);return NULL;
++   }

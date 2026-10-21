@@ -1,0 +1,48 @@
+Target-Vendor: Lenovo/TB710FU/TB710FU:16/BP2A.250605.031.A3/ZUI_17.5.04.059_260327_ROW:user/release-keys
+Source-Image-SHA256: 47bf8aa40610bbc54207b5879b1fb1481d04357bbdb292f4956793a21ced18fa
+Purpose: Remove orphaned Qualcomm debug hooks whose scripts and policy types are absent in owner stock.
+
+--- a/etc/init/hw/init.qcom.rc
++++ b/etc/init/hw/init.qcom.rc
+@@ -738,13 +738,12 @@
+     group root system wakelock graphics
+     disabled
+     oneshot
+-
+-service qti-testscripts /system/bin/sh /product/etc/init.qcom.testscripts.sh
+-    class late_start
+-    user root
+-    disabled
+-    oneshot
+-    seclabel u:r:qti-testscripts:s0
++#service qti-testscripts /system/bin/sh /product/etc/init.qcom.testscripts.sh
++#   class late_start
++#   user root
++#   disabled
++#   oneshot
++#   seclabel u:r:qti-testscripts:s0
+ 
+ service wifi-sdio-on /vendor/bin/init.qcom.sdio.sh
+     class late_start
+@@ -760,7 +759,7 @@
+ 
+ on property:sys.boot_completed=1
+     start qcom-post-boot
+-    start qti-testscripts
++#   start qti-testscripts
+ 
+ on property:ro.vendor.ril.mbn_copy_completed=1
+     write /data/vendor/radio/copy_complete 1
+
+--- a/etc/init/hw/init.qti.ufs.rc
++++ b/etc/init/hw/init.qti.ufs.rc
+@@ -25,6 +25,5 @@
+ # # OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN
+ # # IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ #
+-
+-on init
+-    exec u:r:vendor-qti-testscripts:s0 -- /vendor/bin/sh /vendor/bin/init.qti.ufs.debug.sh
++#on init
++#   exec u:r:vendor-qti-testscripts:s0 -- /vendor/bin/sh /vendor/bin/init.qti.ufs.debug.sh
+

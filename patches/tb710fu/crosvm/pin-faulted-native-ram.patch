@@ -1,0 +1,156 @@
+--- a/hypervisor/src/gunyah/mthp.rs
++++ b/hypervisor/src/gunyah/mthp.rs
+@@ -94,6 +94,29 @@
+     pub mlocked: bool,
+ }
+ 
++/// Optional bounded owner coordination. The stage is explicit so the host
++/// cannot confuse allocation-first and pin-fault-first experiments.
++pub fn coordinate_owner(size: u64, phase: &str) -> std::io::Result<()> {
++    if let Some(raw) = std::env::var_os("DROIDVM_PREPIN_PIPE_FD") {
++        let fd = raw.to_str().and_then(|s| s.parse::<i32>().ok());
++        return if size == (2042u64 << 20) {
++            match fd {
++                Some(fd) => {
++                    // SAFETY: geteuid takes no arguments and has no memory side effects.
++                    let uid = unsafe { libc::geteuid() };
++                    prepin_pipe::coordinate(fd, uid, size, std::time::Duration::from_secs(30), |nonce| {
++                        info!("GH-PREPIN2: ready nonce={} bytes={} stage={}", nonce, size, phase);
++                    })
++                }
++                None => Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid inherited gate descriptor")),
++            }
++        } else {
++            Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid diagnostic memory scope"))
++        };
++    }
++    Ok(())
++}
++
+ /// Prepare a lend region for Gunyah by maximising large-page backing.
+ ///
+ /// Implements the four-phase strategy from QEMU's `gunyah_add_mem`:
+@@ -185,37 +208,17 @@
+         info!("GH: Phase 2: population complete");
+     }
+ 
+-    // Coordinate via the already inherited hvc0 input capability. Directory
+-    // search remains forbidden by Android17 policy. This occurs before PMD
+-    // collapse, mlock, whole-window pin, VM_START or runtime RAM sharing.
+-    if let Some(raw) = std::env::var_os("DROIDVM_PREPIN_PIPE_FD") {
+-        let fd = raw.to_str().and_then(|s| s.parse::<i32>().ok());
+-        let result = if size == (2042u64 << 20) {
+-            match fd {
+-                Some(fd) => {
+-                    // SAFETY: geteuid takes no arguments and has no memory side effects.
+-                    let uid = unsafe { libc::geteuid() };
+-                    prepin_pipe::coordinate(fd, uid, size, std::time::Duration::from_secs(30), |nonce| {
+-                        info!("GH-PREPIN2: ready nonce={} bytes={} stage=before_pmd_and_pin", nonce, size);
+-                    })
+-                }
+-                None => Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid inherited gate descriptor")),
+-            }
+-        } else {
+-            Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid diagnostic memory scope"))
++    if let Err(e) = coordinate_owner(size, "before_pmd_and_pin") {
++        warn!("GH-PREPIN2: refused before pin/share: {}", e);
++        return LendPrepResult {
++            need_small: vec![true; (size / THP_SIZE) as usize],
++            large_page_bytes: 0,
++            populated: false,
++            mlocked: false,
+         };
+-        match result {
+-            Ok(()) => info!("GH-PREPIN2: matching release received; continuing preparation"),
+-            Err(e) => {
+-                warn!("GH-PREPIN2: refused before pin/share: {}", e);
+-                return LendPrepResult {
+-                    need_small: vec![true; (size / THP_SIZE) as usize],
+-                    large_page_bytes: 0,
+-                    populated: false,
+-                    mlocked: false,
+-                };
+-            }
+-        }
++    }
++    if std::env::var_os("DROIDVM_PREPIN_PIPE_FD").is_some() {
++        info!("GH-PREPIN2: matching release received; continuing preparation");
+     }
+ 
+     // ── Phase 3: complete-PMD collapse ───────────────────────────
+--- a/hypervisor/src/gunyah/mod.rs
++++ b/hypervisor/src/gunyah/mod.rs
+@@ -695,29 +695,52 @@
+                 // reason.
+                 #[cfg(any(target_arch = "arm", target_arch = "aarch64"))]
+                 if region.options.purpose == MemoryRegionPurpose::SharedGuestRam {
+-                    // SAFETY: host_addr is a valid mapping of region.size bytes.
+-                    let prep = unsafe {
+-                        mthp::prepare_lend_region(region.host_addr as *mut u8, full_size)
+-                    };
+-                    if !prep.populated || !prep.mlocked {
+-                        error!(
+-                            "GH-SHIM: window gpa={:#x} size={:#x} could not be populated and \
+-                             pinned (reserve pool exhausted?) -- refusing to start, because the \
+-                             share would either fail or hand the guest memory the host may still \
+-                             move under it",
+-                            region.guest_addr.offset(),
++                    if std::env::var_os("DROIDVM_PREPIN_PIPE_FD").is_some() {
++                        // Native2GiB diagnostic only. Fault RAM under the kernel's
++                        // FOLL_LONGTERM/PF_MEMALLOC_PIN context instead of first
++                        // filling movable shmem and then migrating it out of CMA.
++                        // No reserve, ioctl, policy or firmware limit is changed.
++                        if full_size != (2042u64 << 20) {
++                            return Err(Error::new(libc::EINVAL));
++                        }
++                        // SAFETY: this live guest mapping covers full_size bytes.
++                        if unsafe { libc::madvise(region.host_addr as *mut libc::c_void,
++                            full_size as usize, libc::MADV_HUGEPAGE) } != 0 {
++                            return Err(Error::last());
++                        }
++                        mthp::coordinate_owner(full_size, "before_population_and_pin")
++                            .map_err(|e| Error::new(e.raw_os_error().unwrap_or(libc::EINVAL)))?;
++                        base::info!("GH-PREPIN2: matching release received; continuing preparation");
++                        base::info!("GH-EARLY-PIN: faulting fresh RAM under required long-term pin; no prior population/collapse");
++                        guest_ram_pin = Some(pin::LongtermPin::pin_required(
++                            region.host_addr as u64, full_size, pin::PinSite::PreBoot,
++                        )?);
++                        base::info!("GH-EARLY-PIN: whole window held; no compound-backing claim");
++                    } else {
++                        // SAFETY: host_addr is a valid mapping of region.size bytes.
++                        let prep = unsafe {
++                            mthp::prepare_lend_region(region.host_addr as *mut u8, full_size)
++                        };
++                        if !prep.populated || !prep.mlocked {
++                            error!(
++                                "GH-SHIM: window gpa={:#x} size={:#x} could not be populated and \
++                                 pinned (reserve pool exhausted?) -- refusing to start, because the \
++                                 share would either fail or hand the guest memory the host may still \
++                                 move under it",
++                                region.guest_addr.offset(),
++                                full_size,
++                            );
++                            return Err(Error::new(libc::ENOMEM));
++                        }
++                        // Do all FOLL_LONGTERM migration before any parcel reaches firmware.
++                        // The optional probe node is absent on this host; mlock alone is not
++                        // a long-term pin and cannot satisfy this prerequisite.
++                        guest_ram_pin = Some(pin::LongtermPin::pin_required(
++                            region.host_addr as u64,
+                             full_size,
+-                        );
+-                        return Err(Error::new(libc::ENOMEM));
++                            pin::PinSite::PreBoot,
++                        )?);
+                     }
+-                    // Do all FOLL_LONGTERM migration before any parcel reaches firmware.
+-                    // The optional probe node is absent on this host; mlock alone is not
+-                    // a long-term pin and cannot satisfy this prerequisite.
+-                    guest_ram_pin = Some(pin::LongtermPin::pin_required(
+-                        region.host_addr as u64,
+-                        full_size,
+-                        pin::PinSite::PreBoot,
+-                    )?);
+                     base::info!(
+                         "GH-SHIM: window gpa={:#x} size={:#x} prepared; it is shared after \
+                          GH_VM_START and accepted by the shim",

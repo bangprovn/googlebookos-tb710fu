@@ -1,0 +1,48 @@
+<gb-ui><hierarchy>
+<node class="android.view.View" package="com.android.virtualization.terminal" clickable="false" enabled="true" focusable="false" focused="false" password="false" selected="false" bounds="[0,90][3200,1860]">
+<node class="android.view.View" package="com.android.virtualization.terminal" clickable="false" enabled="true" focusable="false" focused="false" password="false" selected="false" bounds="[0,90][3200,1860]">
+<node class="android.view.View" package="com.android.virtualization.terminal" clickable="false" enabled="true" focusable="false" focused="false" password="false" selected="false" bounds="[0,90][3200,1860]">
+<node class="android.view.View" package="com.android.virtualization.terminal" clickable="false" enabled="true" focusable="false" focused="false" password="false" selected="false" bounds="[0,90][3200,1860]">
+<node class="android.view.View" package="com.android.virtualization.terminal" clickable="false" enabled="true" focusable="false" focused="false" password="false" selected="false" bounds="[240,90][2700,200]">
+<node class="android.view.View" package="com.android.virtualization.terminal" clickable="false" enabled="true" focusable="false" focused="false" password="false" selected="false" bounds="[240,90][760,200]">
+<node class="android.view.View" package="com.android.virtualization.terminal" clickable="false" enabled="true" focusable="false" focused="false" password="false" selected="false" bounds="[240,90][659,208]">
+<node class="android.view.View" package="com.android.virtualization.terminal" clickable="false" enabled="true" focusable="false" focused="false" password="false" selected="false" bounds="[195,115][315,235]"/>
+<node class="android.view.View" package="com.android.virtualization.terminal" clickable="false" enabled="true" focusable="true" focused="false" password="false" selected="true" bounds="[270,90][645,208]">
+<node class="android.widget.TextView" package="com.android.virtualization.terminal" clickable="false" enabled="true" focusable="false" focused="false" password="false" selected="false" bounds="[300,123][544,173]"/>
+<node class="android.view.View" package="com.android.virtualization.terminal" clickable="true" enabled="true" focusable="true" focused="false" password="false" selected="false" bounds="[544,90][659,208]">
+<node class="android.view.View" package="com.android.virtualization.terminal" content-desc="Close tab" clickable="false" enabled="true" focusable="false" focused="false" password="false" selected="false" bounds="[581,126][626,171]"/>
+<node class="android.widget.Button" package="com.android.virtualization.terminal" clickable="false" enabled="true" focusable="false" focused="false" password="false" selected="false" bounds="[581,123][626,173]"/>
+</node>
+<node class="android.view.View" package="com.android.virtualization.terminal" clickable="false" enabled="true" focusable="false" focused="false" password="false" selected="false" bounds="[270,105][645,190]"/>
+</node>
+<node class="android.view.View" package="com.android.virtualization.terminal" clickable="false" enabled="true" focusable="false" focused="false" password="false" selected="false" bounds="[600,115][720,235]"/>
+</node>
+<node class="android.view.View" package="com.android.virtualization.terminal" clickable="true" enabled="true" focusable="true" focused="false" password="false" selected="false" bounds="[659,90][779,209]">
+<node class="android.view.View" package="com.android.virtualization.terminal" content-desc="Add tab" clickable="false" enabled="true" focusable="false" focused="false" password="false" selected="false" bounds="[694,124][744,174]"/>
+<node class="android.widget.Button" package="com.android.virtualization.terminal" clickable="false" enabled="true" focusable="false" focused="false" password="false" selected="false" bounds="[676,106][761,191]"/>
+</node>
+</node>
+<node class="android.view.View" package="com.android.virtualization.terminal" clickable="false" enabled="true" focusable="false" focused="false" password="false" selected="false" bounds="[2465,98][2550,183]">
+<node class="android.view.View" package="com.android.virtualization.terminal" clickable="true" enabled="true" focusable="true" focused="false" password="false" selected="false" bounds="[2449,90][2569,202]">
+<node class="android.view.View" package="com.android.virtualization.terminal" content-desc="Display options" clickable="false" enabled="true" focusable="false" focused="false" password="false" selected="false" bounds="[2484,117][2534,167]"/>
+<node class="android.view.View" package="com.android.virtualization.terminal" clickable="false" enabled="true" focusable="false" focused="false" password="false" selected="false" bounds="[2466,99][2550,183]"/>
+</node>
+</node>
+<node class="android.view.View" package="com.android.virtualization.terminal" clickable="false" enabled="true" focusable="false" focused="false" password="false" selected="false" bounds="[2585,98][2670,183]">
+<node class="android.view.View" package="com.android.virtualization.terminal" clickable="true" enabled="true" focusable="true" focused="false" password="false" selected="false" bounds="[2569,90][2689,202]">
+<node class="android.view.View" package="com.android.virtualization.terminal" clickable="false" enabled="true" focusable="false" focused="false" password="false" selected="false" bounds="[2604,117][2654,167]"/>
+<node class="android.widget.Button" package="com.android.virtualization.terminal" clickable="false" enabled="true" focusable="false" focused="false" password="false" selected="false" bounds="[2586,99][2670,183]"/>
+</node>
+</node>
+</node>
+<node class="android.view.View" package="com.android.virtualization.terminal" clickable="false" enabled="true" focusable="false" focused="false" password="false" selected="false" bounds="[0,190][3200,1860]">
+<node class="android.view.View" package="com.android.virtualization.terminal" clickable="false" enabled="true" focusable="false" focused="false" password="false" selected="false" bounds="[0,190][3200,1860]">
+<node class="android.view.View" package="com.android.virtualization.terminal" clickable="false" enabled="true" focusable="false" focused="false" password="false" selected="false" bounds="[1550,925][1650,1025]"/>
+<node class="android.widget.TextView" package="com.android.virtualization.terminal" clickable="false" enabled="true" focusable="false" focused="false" password="false" selected="false" bounds="[1366,1065][1835,1125]"/>
+</node>
+</node>
+</node>
+</node>
+</node>
+</node>
+</hierarchy><gb-meta complete="true" node_count="30"/></gb-ui>

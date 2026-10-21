@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Restore access to the installed AVF Java service on the mica/TB710FU port.
+     This declares the framework API, not verified guest or hardware support.
+     VM protection capabilities remain subject to native backend validation. -->
+<permissions>
+    <feature name="android.software.virtualization_framework" />
+</permissions>

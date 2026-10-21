@@ -1,0 +1,123 @@
+--- a/src/vrend_renderer.c
++++ b/src/vrend_renderer.c
+@@ -12100,24 +12100,17 @@
+ void vrend_renderer_detach_res_ctx(struct vrend_context *ctx,
+                                    struct virgl_resource *res)
+ {
+-   if (!res->pipe_resource) {
+-      if (ctx->untyped_resource_cache == res) {
+-         ctx->untyped_resource_cache = NULL;
+-      } else {
+-         struct vrend_untyped_resource *iter;
+-         LIST_FOR_EACH_ENTRY(iter, &ctx->untyped_resources, head) {
+-            if (iter->resource == res) {
+-               list_del(&iter->head);
+-               free(iter);
+-               break;
+-            }
+-         }
+-      }
+-
+-      return;
+-   }
+-
+-   vrend_ctx_resource_remove(ctx->res_hash, res->res_id);
++   /* Another context may have promoted a retained untyped resource. Remove
++    * its nonowning cache/list record regardless of the shared pipe state. */
++   if (ctx->untyped_resource_cache == res) ctx->untyped_resource_cache = NULL;
++   struct vrend_untyped_resource *iter, *next;
++   LIST_FOR_EACH_ENTRY_SAFE(iter, next, &ctx->untyped_resources, head) {
++      if (iter->resource == res) {
++         list_del(&iter->head);
++         free(iter);
++      }
++   }
++   if (res->pipe_resource) vrend_ctx_resource_remove(ctx->res_hash, res->res_id);
+ }
+ 
+ struct vrend_resource *vrend_renderer_ctx_res_lookup(struct vrend_context *ctx, int res_handle)
+@@ -12375,20 +12368,23 @@
+ {
+    if (!args->plane_count || args->plane_count>VIRGL_GBM_MAX_PLANES) return EINVAL;
+    struct virgl_resource *res = NULL;
++   struct vrend_untyped_resource *staged_untyped = NULL;
++   const char *mode = getenv("GB_NATIVE_IMPORT_TXN_V1");
++   const bool transactional = mode && !strcmp(mode,"retain-untyped-v1");
+ 
+    /* look up the untyped resource */
+    if (ctx->untyped_resource_cache &&
+        ctx->untyped_resource_cache->res_id == res_id) {
+       res = ctx->untyped_resource_cache;
+-      ctx->untyped_resource_cache = NULL;
++      if (!transactional) ctx->untyped_resource_cache = NULL;
+    } else {
+       /* cache miss */
+       struct vrend_untyped_resource *iter;
+       LIST_FOR_EACH_ENTRY(iter, &ctx->untyped_resources, head) {
+          if (iter->resource->res_id == res_id) {
+             res = iter->resource;
+-            list_del(&iter->head);
+-            free(iter);
++            if (transactional) staged_untyped = iter;
++            else { list_del(&iter->head); free(iter); }
+             break;
+          }
+       }
+@@ -12402,6 +12398,10 @@
+       vrend_report_context_error(ctx, VIRGL_ERROR_CTX_ILLEGAL_RESOURCE, res_id);
+       return EINVAL;
+    }
++
++   /* A failed native attempt may own pending/quarantined duplicate backing.
++    * Retaining a nonowning lookup must never make that attempt retryable. */
++   if (res->vrend_native_import_blocked) return EINVAL;
+ 
+    /* resource is still untyped */
+    if (!res->pipe_resource) {
+@@ -12446,8 +12446,10 @@
+       if (android_bridge) {
+          if (args->format!=VIRGL_FORMAT_R8G8B8A8_UNORM && args->format!=VIRGL_FORMAT_B8G8R8A8_UNORM &&
+              args->format!=VIRGL_FORMAT_R8G8B8X8_UNORM && args->format!=VIRGL_FORMAT_B8G8R8X8_UNORM) {FREE(gr);return EINVAL;}
++         if (transactional) res->vrend_native_import_blocked = 1;
+          gr->egl_image=virgl_egl_image_from_android_bridge(egl,args->width,args->height,drm_format,args->modifier,args->plane_count,res->fd,args->plane_strides[0],args->plane_offsets[0],&gr->gb_android_image);
+       } else {
++      if (transactional) res->vrend_native_import_blocked = 1;
+       gr->egl_image = virgl_egl_image_from_dmabuf(egl,
+                                                   args->width,
+                                                   args->height,
+@@ -12496,6 +12498,20 @@
+                              res->res_id,
+                              (struct vrend_resource *)res->pipe_resource);
+ 
++   if (transactional) {
++      /* Insertion has a void API. Keep the nonowning lookup if allocation
++       * failed; the completed pipe_resource remains owned until teardown.
++       * Keep the guard set: a later call with different import metadata must
++       * not be accepted as a registration-only retry. */
++      if (vrend_renderer_ctx_res_lookup(ctx,res_id) !=
++          (struct vrend_resource *)res->pipe_resource) {
++         res->vrend_native_import_blocked = 1;
++         return ENOMEM;
++      }
++      if (ctx->untyped_resource_cache == res) ctx->untyped_resource_cache = NULL;
++      else if (staged_untyped) { list_del(&staged_untyped->head); free(staged_untyped); }
++      res->vrend_native_import_blocked = 0;
++   }
+    return 0;
+ }
+ 
+--- a/src/virgl_resource.h
++++ b/src/virgl_resource.h
+@@ -122,6 +122,12 @@
+    struct virgl_resource_vulkan_info vulkan_info;
+ 
+    void *private_data;
++
++   /* Zero-initialized by virgl_resource_create. Set only by the opt-in vrend
++    * transaction before a native import attempt; opaque failures may retain
++    * pending backing and must not become retryable through a retained lookup.
++    * Append-only internal field; all consumers require one matched rebuild. */
++   uint8_t vrend_native_import_blocked;
+ };
+ 
+ struct virgl_resource_pipe_callbacks {

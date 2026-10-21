@@ -1,0 +1,407 @@
+--- a/src/vrend_renderer.c
++++ b/src/vrend_renderer.c
+@@ -812,6 +812,57 @@
+    void *fence_retire_data;
+ };
+ 
++/* The diagnostic bridge is read-only. Complete every bridged GL read before
++ * leaving its operation; a later context may safely refresh the same AHB. */
++struct gb_android_read_scope { bool active; };
++static void gb_android_read_scope_end(struct gb_android_read_scope *scope)
++{
++   if (scope->active) glFinish();
++}
++#define GB_ANDROID_READ_SCOPE(name) struct gb_android_read_scope name __attribute__((cleanup(gb_android_read_scope_end))) = { false }
++
++static int gb_android_resource_read(struct vrend_context *ctx, struct vrend_resource *res)
++{
++   if (!res || !res->gb_android_image) return 0;
++#ifdef HAVE_EPOXY_EGL_H
++   if (ctx->sub && vrend_hw_switch_context(ctx,true) && virgl_egl_android_bridge_refresh(res->gb_android_image)) return 0;
++#endif
++   vrend_report_context_error(ctx,VIRGL_ERROR_CTX_ILLEGAL_RESOURCE,res->id);
++   return EIO;
++}
++static bool gb_android_framebuffer_writable(struct vrend_context *ctx)
++{
++   if (!ctx->sub) return false;
++   for (unsigned i=0;i<PIPE_MAX_COLOR_BUFS;i++)
++      if (ctx->sub->surf[i] && ctx->sub->surf[i]->texture && ctx->sub->surf[i]->texture->gb_android_image) {
++         vrend_report_context_error(ctx,VIRGL_ERROR_CTX_ILLEGAL_RESOURCE,ctx->sub->surf[i]->texture->id);return false;
++      }
++   if (ctx->sub->zsurf && ctx->sub->zsurf->texture && ctx->sub->zsurf->texture->gb_android_image) return false;
++   return true;
++}
++static int gb_android_shader_reads(struct vrend_context *ctx, bool *active)
++{
++   if (!ctx->sub) return EINVAL;
++   struct vrend_resource *seen[4];unsigned n=0;
++   for (unsigned stage=0;stage<PIPE_SHADER_TYPES;stage++) {
++      for (unsigned i=0;i<PIPE_MAX_SHADER_IMAGES;i++) {
++         struct vrend_resource *res=ctx->sub->image_views[stage][i].texture;
++         if (res && res->gb_android_image) {vrend_report_context_error(ctx,VIRGL_ERROR_CTX_ILLEGAL_RESOURCE,res->id);return EROFS;}
++      }
++      if (ctx->sub->views[stage].num_views>PIPE_MAX_SHADER_SAMPLER_VIEWS) return EINVAL;
++      for (unsigned i=0;i<ctx->sub->views[stage].num_views;i++) {
++         struct vrend_sampler_view *view=ctx->sub->views[stage].views[i];
++         struct vrend_resource *res=view?view->texture:NULL;
++         if (!res || !res->gb_android_image) continue;
++         bool duplicate=false;for (unsigned j=0;j<n;j++) if (seen[j]==res) duplicate=true;
++         if (duplicate) continue;
++         if (n==4 || gb_android_resource_read(ctx,res)) return EIO;
++         seen[n++]=res;*active=true;
++      }
++   }
++   return 0;
++}
++
+ static void vrend_pause_render_condition(struct vrend_context *ctx, bool pause);
+ static void vrend_update_viewport_state(struct vrend_sub_context *sub_ctx);
+ static void vrend_update_scissor_state(struct vrend_sub_context *sub_ctx);
+@@ -4408,6 +4459,7 @@
+                  const union pipe_color_union *color,
+                  double depth, unsigned stencil)
+ {
++   if (ctx->in_error || !gb_android_framebuffer_writable(ctx)) return;
+    GLbitfield bits = 0;
+    struct vrend_sub_context *sub_ctx = ctx->sub;
+ 
+@@ -4581,6 +4633,8 @@
+       vrend_report_context_error(ctx, VIRGL_ERROR_CTX_ILLEGAL_RESOURCE, handle);
+       return EINVAL;
+    }
++   if (res->gb_android_image) {vrend_report_context_error(ctx,VIRGL_ERROR_CTX_ILLEGAL_RESOURCE,res->id);return EROFS;}
++
+ 
+    enum virgl_formats fmt = res->base.format;
+    format = tex_conv_table[fmt].glformat;
+@@ -5473,6 +5527,7 @@
+                    uint32_t cso, uint32_t indirect_handle,
+                    uint32_t indirect_draw_count_handle)
+ {
++   GB_ANDROID_READ_SCOPE(gb_read);
+    bool new_program = false;
+    struct vrend_resource *indirect_res = NULL;
+    struct vrend_resource *indirect_params_res = NULL;
+@@ -5514,6 +5569,9 @@
+ 
+    if (ctx->ctx_switch_pending)
+       vrend_finish_context_switch(ctx);
++
++   if (!gb_android_framebuffer_writable(ctx)) return EROFS;
++   if (gb_android_shader_reads(ctx,&gb_read.active)) return EIO;
+ 
+    vrend_update_frontface_state(sub_ctx);
+    if (ctx->sub->stencil_state_dirty)
+@@ -5750,6 +5808,8 @@
+                        uint32_t indirect_handle,
+                        uint32_t indirect_offset)
+ {
++   GB_ANDROID_READ_SCOPE(gb_read);
++   if (ctx->in_error || gb_android_shader_reads(ctx,&gb_read.active)) return;
+    bool new_program = false;
+    struct vrend_resource *indirect_res = NULL;
+ 
+@@ -7962,7 +8022,7 @@
+    debug_texture(__func__, gr);
+ 
+    if (image_oes) {
+-      if (has_bit(gr->storage_bits, VREND_STORAGE_GL_IMMUTABLE) &&
++      if (!gr->gb_android_image && has_bit(gr->storage_bits, VREND_STORAGE_GL_IMMUTABLE) &&
+           has_feature(feat_egl_image_storage)) {
+          glEGLImageTargetTexStorageEXT(gr->target, (GLeglImageOES) image_oes, NULL);
+       } else if (has_feature(feat_egl_image)) {
+@@ -7980,6 +8040,7 @@
+          glBindTexture(gr->target, 0);
+          return EINVAL;
+       }
++      if (gr->gb_android_image && glGetError()!=GL_NO_ERROR) return EINVAL;
+       gr->storage_bits |= VREND_STORAGE_EGL_IMAGE;
+    } else {
+       internalformat = tex_conv_table[format].internalformat;
+@@ -8184,6 +8245,9 @@
+          }
+       }
+    }
++#endif
++#ifdef HAVE_EPOXY_EGL_H
++   if (res->gb_android_image) virgl_egl_android_bridge_destroy(res->gb_android_image);
+ #endif
+ #ifdef ENABLE_MINIGBM_ALLOCATION
+    if (res->gbm_bo)
+@@ -9085,6 +9149,7 @@
+                                             const struct vrend_transfer_info *info,
+                                             int transfer_mode)
+ {
++   GB_ANDROID_READ_SCOPE(gb_read);
+    const struct iovec *iov;
+    int num_iovs;
+ 
+@@ -9093,6 +9158,12 @@
+ 
+    if (!vrend_hw_switch_context(ctx, true))
+       return EINVAL;
++
++   if (res->gb_android_image) {
++      if (transfer_mode!=VIRGL_TRANSFER_FROM_HOST) return EROFS;
++      if (gb_android_resource_read(ctx,res)) return EIO;
++      gb_read.active=true;
++   }
+ 
+    assert(check_transfer_iovec(res, info));
+    if (info->iovec && info->iovec_cnt) {
+@@ -9138,6 +9209,7 @@
+                                 const struct vrend_transfer_info *info,
+                                 int transfer_mode)
+ {
++   GB_ANDROID_READ_SCOPE(gb_read);
+    struct vrend_resource *res;
+ 
+    res = vrend_renderer_ctx_res_lookup(ctx, dst_handle);
+@@ -9145,6 +9217,9 @@
+       vrend_report_context_error(ctx, VIRGL_ERROR_CTX_ILLEGAL_RESOURCE, dst_handle);
+       return EINVAL;
+    }
++
++   if (res->gb_android_image && (transfer_mode!=VIRGL_TRANSFER_FROM_HOST || gb_android_resource_read(ctx,res))) return EIO;
++   gb_read.active=res->gb_android_image!=NULL;
+ 
+    if (!check_transfer_iovec(res, info)) {
+       if (has_bit(res->storage_bits, VREND_STORAGE_EGL_IMAGE))
+@@ -9182,6 +9257,8 @@
+       vrend_report_context_error(ctx, VIRGL_ERROR_CTX_ILLEGAL_RESOURCE, dst_handle);
+       return EINVAL;
+    }
++   if (res->gb_android_image) {vrend_report_context_error(ctx,VIRGL_ERROR_CTX_ILLEGAL_RESOURCE,res->id);return EROFS;}
++
+ 
+    if (!check_transfer_bounds(res, info)) {
+       vrend_report_context_error(ctx, VIRGL_ERROR_CTX_ILLEGAL_CMD_BUFFER, dst_handle);
+@@ -9213,6 +9290,7 @@
+                                    uint32_t src_handle,
+                                    const struct vrend_transfer_info *info)
+ {
++   GB_ANDROID_READ_SCOPE(gb_read);
+    struct vrend_resource *src_res, *dst_res;
+ 
+    src_res = vrend_renderer_ctx_res_lookup(ctx, src_handle);
+@@ -9227,6 +9305,10 @@
+       vrend_report_context_error(ctx, VIRGL_ERROR_CTX_ILLEGAL_RESOURCE, dst_handle);
+       return EINVAL;
+    }
++   if (dst_res->gb_android_image) return EROFS;
++   if (gb_android_resource_read(ctx,src_res)) return EIO;
++   gb_read.active=src_res->gb_android_image!=NULL;
++
+ 
+    if (!src_res->iov) {
+       vrend_report_context_error(ctx, VIRGL_ERROR_CTX_ILLEGAL_RESOURCE, dst_handle);
+@@ -9285,6 +9367,7 @@
+                                    uint32_t src_handle,
+                                    const struct vrend_transfer_info *info)
+ {
++   GB_ANDROID_READ_SCOPE(gb_read);
+    struct vrend_resource *src_res, *dst_res;
+ 
+    src_res = vrend_renderer_ctx_res_lookup(ctx, src_handle);
+@@ -9299,6 +9382,10 @@
+       vrend_report_context_error(ctx, VIRGL_ERROR_CTX_ILLEGAL_RESOURCE, dst_handle);
+       return EINVAL;
+    }
++   if (dst_res->gb_android_image) return EROFS;
++   if (gb_android_resource_read(ctx,src_res)) return EIO;
++   gb_read.active=src_res->gb_android_image!=NULL;
++
+ 
+    if (!dst_res->iov) {
+       vrend_report_context_error(ctx, VIRGL_ERROR_CTX_ILLEGAL_RESOURCE, dst_handle);
+@@ -9748,6 +9835,7 @@
+                                          uint32_t src_handle, uint32_t src_level,
+                                          const struct pipe_box *src_box)
+ {
++   GB_ANDROID_READ_SCOPE(gb_read);
+    struct vrend_resource *src_res, *dst_res;
+    GLbitfield glmask = 0;
+    GLint sy1, sy2, dy1, dy2;
+@@ -9767,6 +9855,10 @@
+       vrend_report_context_error(ctx, VIRGL_ERROR_CTX_ILLEGAL_RESOURCE, dst_handle);
+       return;
+    }
++   if (dst_res->gb_android_image) {vrend_report_context_error(ctx,VIRGL_ERROR_CTX_ILLEGAL_RESOURCE,dst_handle);return;}
++   if (gb_android_resource_read(ctx,src_res)) return;
++   gb_read.active=src_res->gb_android_image!=NULL;
++
+ 
+    VREND_DEBUG(dbg_copy_resource, ctx, "COPY_REGION: From %s ms:%d [%d, %d, %d]+[%d, %d, %d] lvl:%d "
+                                    "To %s ms:%d [%d, %d, %d]\n",
+@@ -10263,6 +10355,7 @@
+                          uint32_t dst_handle, uint32_t src_handle,
+                          const struct pipe_blit_info *info)
+ {
++   GB_ANDROID_READ_SCOPE(gb_read);
+    unsigned int comp_flags = 0;
+    struct vrend_resource *src_res, *dst_res;
+    int src_width, src_height, dst_width, dst_height;
+@@ -10277,6 +10370,10 @@
+       vrend_report_context_error(ctx, VIRGL_ERROR_CTX_ILLEGAL_RESOURCE, dst_handle);
+       return;
+    }
++   if (dst_res->gb_android_image) {vrend_report_context_error(ctx,VIRGL_ERROR_CTX_ILLEGAL_RESOURCE,dst_handle);return;}
++   if (gb_android_resource_read(ctx,src_res)) return;
++   gb_read.active=src_res->gb_android_image!=NULL;
++
+ 
+    if (ctx->in_error)
+       return;
+@@ -12202,6 +12299,7 @@
+                                 struct virgl_renderer_export_query *export_query)
+ {
+    struct vrend_resource *res = (struct vrend_resource *)pres;
++   if (res->gb_android_image && export_query->in_export_fds) return -EINVAL;
+ 
+ #ifdef ENABLE_MINIGBM_ALLOCATION
+    if (res->gbm_bo)
+@@ -12259,6 +12357,7 @@
+                                       uint32_t res_id,
+                                       const struct vrend_renderer_resource_set_type_args *args)
+ {
++   if (!args->plane_count || args->plane_count>VIRGL_GBM_MAX_PLANES) return EINVAL;
+    struct virgl_resource *res = NULL;
+ 
+    /* look up the untyped resource */
+@@ -12327,6 +12426,10 @@
+          return EINVAL;
+       }
+ 
++      if (virgl_egl_android_bridge_required(egl)) {
++         if (args->format!=VIRGL_FORMAT_R8G8B8A8_UNORM && args->format!=VIRGL_FORMAT_B8G8R8A8_UNORM) {FREE(gr);return EINVAL;}
++         gr->egl_image=virgl_egl_image_from_android_bridge(egl,args->width,args->height,drm_format,args->modifier,args->plane_count,res->fd,args->plane_strides[0],args->plane_offsets[0],&gr->gb_android_image);
++      } else {
+       gr->egl_image = virgl_egl_image_from_dmabuf(egl,
+                                                   args->width,
+                                                   args->height,
+@@ -12336,6 +12439,7 @@
+                                                   plane_fds,
+                                                   args->plane_strides,
+                                                   args->plane_offsets);
++      }
+       if (!gr->egl_image) {
+          vrend_printf("%s: failed to create egl image\n", __func__);
+          FREE(gr);
+@@ -12346,10 +12450,15 @@
+ 
+       ret = vrend_resource_alloc_texture(gr, virgl_format, gr->egl_image);
+       if (ret) {
++         if (gr->gb_android_image && (gr->storage_bits & VREND_STORAGE_GL_TEXTURE)) glDeleteTextures(1,&gr->id);
+          virgl_egl_image_destroy(egl, gr->egl_image);
++         if (gr->gb_android_image) virgl_egl_android_bridge_destroy(gr->gb_android_image);
+          FREE(gr);
+          return ret;
+       }
++
++      /* Complete native-image import bookkeeping in the creator context. */
++      if (gr->gb_android_image) glFinish();
+ 
+       /* "promote" the fd to pipe_resource */
+       close(res->fd);
+--- a/src/vrend_renderer.h
++++ b/src/vrend_renderer.h
+@@ -87,6 +87,9 @@
+    uint32_t num_iovs;
+    uint64_t mipmap_offsets[VR_MAX_TEXTURE_2D_LEVELS];
+    void *gbm_bo, *egl_image;
++   /* Opt-in read-only Android image bridge. */
++   void *gb_android_image;
++
+    void *aux_plane_egl_image[VIRGL_GBM_MAX_PLANES];
+ 
+    uint64_t size;
+--- a/src/vrend_winsys_egl.c
++++ b/src/vrend_winsys_egl.c
+@@ -45,6 +45,8 @@
+ #include "vrend_winsys_egl.h"
+ #include "vrend_winsys_gbm.h"
+ 
++#include "gb_android_image_bridge.h"
++
+ #define EGL_KHR_SURFACELESS_CONTEXT            BIT(0)
+ #define EGL_KHR_CREATE_CONTEXT                 BIT(1)
+ #define EGL_MESA_DRM_IMAGE                     BIT(2)
+@@ -634,6 +636,61 @@
+                                     EGL_LINUX_DMA_BUF_EXT,
+                                     (EGLClientBuffer)NULL,
+                                     attrs);
++}
++
++bool virgl_egl_android_bridge_required(struct virgl_egl *egl)
++{
++#if defined(__ANDROID__) && defined(__aarch64__) && defined(ENABLE_VULKAN_DLOAD)
++   const char *mode=getenv("GB_ANDROID_IMAGE_BRIDGE_V1");
++   if (!mode || strcmp(mode,"diagnostic-linear-v1") || !egl) return false;
++   gb_image_log("egl_dma_buf_import_advertised",has_bit(egl->extension_bits,EGL_EXT_IMAGE_DMA_BUF_IMPORT),0,0);
++   return !has_bit(egl->extension_bits,EGL_EXT_IMAGE_DMA_BUF_IMPORT);
++#else
++   (void)egl; return false;
++#endif
++}
++
++void *virgl_egl_image_from_android_bridge(struct virgl_egl *egl,
++   uint32_t width, uint32_t height, uint32_t format, uint64_t modifier,
++   uint32_t planes, int fd, uint32_t stride, uint32_t offset, void **bridge)
++{
++   *bridge=NULL;
++#if defined(__ANDROID__) && defined(__aarch64__) && defined(ENABLE_VULKAN_DLOAD)
++   const char *extensions=eglQueryString(egl->egl_display,EGL_EXTENSIONS);
++   if (!virgl_egl_has_extension_in_string(extensions,"EGL_ANDROID_image_native_buffer") ||
++       !virgl_egl_has_extension_in_string(extensions,"EGL_ANDROID_get_native_client_buffer") ||
++       !virgl_has_egl_khr_gl_colorspace(egl)) return NULL;
++   struct gb_android_image *g=gb_android_image_create(width,height,format,modifier,planes,fd,stride,offset);
++   if (!g) return NULL;
++   glFinish();
++   if (!gb_android_image_refresh(g)) {gb_android_image_destroy(g);return NULL;}
++   PFNEGLGETNATIVECLIENTBUFFERANDROIDPROC native=(PFNEGLGETNATIVECLIENTBUFFERANDROIDPROC)eglGetProcAddress("eglGetNativeClientBufferANDROID");
++   const EGLint attrs[]={EGL_IMAGE_PRESERVED_KHR,EGL_TRUE,EGL_GL_COLORSPACE_KHR,EGL_GL_COLORSPACE_LINEAR_KHR,EGL_NONE};
++   EGLImageKHR image=EGL_NO_IMAGE_KHR;
++   if (native) image=eglCreateImageKHR(egl->egl_display,EGL_NO_CONTEXT,EGL_NATIVE_BUFFER_ANDROID,native(g->ahb),attrs);
++   if (image==EGL_NO_IMAGE_KHR) {gb_image_log("native_egl_image",eglGetError(),width,height);gb_android_image_destroy(g);return NULL;}
++   *bridge=g;return image;
++#else
++   (void)egl;(void)width;(void)height;(void)format;(void)modifier;(void)planes;(void)fd;(void)stride;(void)offset;return NULL;
++#endif
++}
++
++bool virgl_egl_android_bridge_refresh(void *bridge)
++{
++#if defined(__ANDROID__) && defined(__aarch64__) && defined(ENABLE_VULKAN_DLOAD)
++   glFinish();return gb_android_image_refresh(bridge);
++#else
++   (void)bridge;return false;
++#endif
++}
++
++void virgl_egl_android_bridge_destroy(void *bridge)
++{
++#if defined(__ANDROID__) && defined(__aarch64__) && defined(ENABLE_VULKAN_DLOAD)
++   gb_android_image_destroy(bridge);
++#else
++   (void)bridge;
++#endif
+ }
+ 
+ void virgl_egl_image_destroy(struct virgl_egl *egl, void *image)
+--- a/src/vrend_winsys_egl.h
++++ b/src/vrend_winsys_egl.h
+@@ -67,6 +67,13 @@
+                                   const int *plane_fds,
+                                   const uint32_t *plane_strides,
+                                   const uint32_t *plane_offsets);
++bool virgl_egl_android_bridge_required(struct virgl_egl *egl);
++void *virgl_egl_image_from_android_bridge(struct virgl_egl *egl,
++   uint32_t width, uint32_t height, uint32_t format, uint64_t modifier,
++   uint32_t planes, int fd, uint32_t stride, uint32_t offset, void **bridge);
++bool virgl_egl_android_bridge_refresh(void *bridge);
++void virgl_egl_android_bridge_destroy(void *bridge);
++
+ void virgl_egl_image_destroy(struct virgl_egl *egl, void *image);
+ 
+ void *virgl_egl_image_from_gbm_bo(struct virgl_egl *egl, struct gbm_bo *bo);

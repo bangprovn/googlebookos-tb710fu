@@ -1,0 +1,36 @@
+--- a/drivers/virt/gunyah/rsc_mgr_rpc.c
++++ b/drivers/virt/gunyah/rsc_mgr_rpc.c
+@@ -219,6 +219,8 @@
+ 
+ 	ret = gh_rm_platform_pre_mem_share(rm, p);
+ 	if (ret) {
++		pr_warn_ratelimited("gb-gunyah-phase-v1: platform_prepare label=%u spans=%zu error=%d\n",
++				    p->label, p->n_mem_entries, ret);
+ 		kfree(msg);
+ 		return ret;
+ 	}
+@@ -248,7 +250,14 @@
+ 	kfree(msg);
+ 
+ 	if (ret) {
+-		gh_rm_platform_post_mem_reclaim(rm, p);
++		int cleanup;
++
++		pr_warn_ratelimited("gb-gunyah-phase-v1: resource_manager label=%u spans=%zu error=%d\n",
++				    p->label, p->n_mem_entries, ret);
++		cleanup = gh_rm_platform_post_mem_reclaim(rm, p);
++		if (cleanup)
++			pr_warn_ratelimited("gb-gunyah-phase-v1: platform_rollback label=%u error=%d\n",
++					    p->label, cleanup);
+ 		return ret;
+ 	}
+ 
+@@ -260,6 +269,8 @@
+ 					&p->mem_entries[initial_mem_entries],
+ 					p->n_mem_entries - initial_mem_entries);
+ 		if (ret) {
++			pr_warn_ratelimited("gb-gunyah-phase-v1: append label=%u error=%d\n",
++					    p->label, ret);
+ 			gh_rm_mem_reclaim(rm, p);
+ 			p->mem_handle = GH_MEM_HANDLE_INVAL;
+ 		}

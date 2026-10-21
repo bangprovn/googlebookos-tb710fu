@@ -1,0 +1,26 @@
+/target/
+/artifacts/
+/.gb-cache/
+/inputs/
+/firmware/
+/logs/
+/edl_config.json
+
+__pycache__/
+*.py[cod]
+*.part
+*.log
+
+# Firmware, downloaded binaries and local signing material.
+*.img
+*.bin
+*.zip
+*.apk
+*.apex
+*.jar
+*.dex
+*.so
+*.pem
+*.key
+*.keystore
+*.p12

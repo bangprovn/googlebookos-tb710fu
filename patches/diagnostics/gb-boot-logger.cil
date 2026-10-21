@@ -1,0 +1,43 @@
+; Temporary platform diagnostic domain. No permissive declaration, mount,
+; partition access, boot control, policy control or hardware replacement.
+(type gb_boot_logger)
+(roletype r gb_boot_logger)
+(roletype object_r gb_boot_logger)
+(typeattributeset domain (gb_boot_logger))
+(typeattributeset coredomain (gb_boot_logger))
+(type gb_boot_logger_exec)
+(roletype object_r gb_boot_logger_exec)
+(typeattributeset file_type (gb_boot_logger_exec))
+(typeattributeset exec_type (gb_boot_logger_exec))
+(typeattributeset system_file_type (gb_boot_logger_exec))
+(type gb_boot_logger_data_file)
+(roletype object_r gb_boot_logger_data_file)
+(typeattributeset file_type (gb_boot_logger_data_file))
+
+(allow init gb_boot_logger_exec (file (read getattr map open execute)))
+(allow init gb_boot_logger (process (transition siginh rlimitinh)))
+(typetransition init gb_boot_logger_exec process gb_boot_logger)
+(allow gb_boot_logger gb_boot_logger_exec (file (read getattr map open execute entrypoint)))
+(allow gb_boot_logger init (process (sigchld)))
+(allow gb_boot_logger init (fd (use)))
+(allow gb_boot_logger self (process (fork sigchld sigkill)))
+
+(allow gb_boot_logger self (capability2 (syslog)))
+(allow gb_boot_logger kernel (system (syslog_read)))
+(allow gb_boot_logger metadata_file (dir (search getattr read open)))
+(allow gb_boot_logger gb_boot_logger_data_file (dir (read write create getattr setattr open search add_name remove_name)))
+(allow gb_boot_logger gb_boot_logger_data_file (file (read write create getattr open append rename unlink)))
+
+; Capture through Android's log reader socket, using the retained system logcat.
+(allow gb_boot_logger logcat_exec (file (read getattr map open execute execute_no_trans)))
+(allow gb_boot_logger logdr_socket (sock_file (write)))
+(allow gb_boot_logger logd (unix_stream_socket (connectto)))
+(allow gb_boot_logger logd (unix_dgram_socket (sendto)))
+(allow gb_boot_logger logd (fd (use)))
+
+; Protect the boundary if this diagnostic source is extended later.
+(neverallow gb_boot_logger self (capability (sys_admin sys_boot sys_module sys_ptrace mknod)))
+(neverallow gb_boot_logger self (capability2 (mac_admin mac_override)))
+(neverallow gb_boot_logger dev_type (blk_file (read write open append)))
+(neverallow gb_boot_logger metadata_file (file (write create append unlink rename)))
+(neverallow gb_boot_logger vold_metadata_file (file (read write create append unlink rename)))

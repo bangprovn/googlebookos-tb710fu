@@ -1,0 +1,35 @@
+# D31 companion userspace. The kernel node defaults to 0600 until this action.
+# Reuse the existing Gunyah SELinux object type; DAC limits the additional
+# interface to Android's VM group. Its kernel also checks the exact VM fd/MM.
+on post-fs-data
+    chmod 0600 /dev/gunyah_share
+    restorecon /dev/gunyah_share
+    chown root virtualmachine /dev/gunyah_share
+    chmod 0660 /dev/gunyah_share
+    write /sys/kernel/mm/transparent_hugepage/shmem_enabled advise
+    write /sys/kernel/mm/transparent_hugepage/defrag madvise
+    exec_start gb-terminal-runtime-boot
+
+service gb-terminal-runtime-boot /system_ext/bin/gb-terminal-mount enable-runtime
+    user root
+    group root
+    capabilities SYS_ADMIN
+    disabled
+    oneshot
+    timeout_period 15
+
+# Fixed owner diagnostic command, disabled at boot. The existing shell test
+# client has no VM group; this service grants only that supplemental group.
+# Config/FIFO/console paths are shell-owned test artifacts, never original
+# Terminal data. The host checks and stages their content before triggering it.
+on property:debug.gb.runtime_probe=1
+    setprop debug.gb.runtime_probe 0
+    start gb-runtime-share-probe
+
+service gb-runtime-share-probe /system/bin/sh -c "exec /system/bin/timeout 95 /apex/com.android.virt/bin/vm run /data/local/tmp/gb-runtime-share-probe/probe.json --name gb-runtime-share-probe-1 --hugepages --console /data/local/tmp/gb-runtime-share-probe/console.log --console-in /data/local/tmp/gb-runtime-share-probe/console.fifo --log /data/local/tmp/gb-runtime-share-probe/guest.log > /data/local/tmp/gb-runtime-share-probe/client.log 2>&1"
+    user shell
+    group shell virtualmachine log readproc
+    seclabel u:r:shell:s0
+    disabled
+    oneshot
+    timeout_period 100

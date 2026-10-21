@@ -1,0 +1,45 @@
+--- a/src/vulkan/wsi/wsi_common.c
++++ b/src/vulkan/wsi/wsi_common.c
+@@ -1490,7 +1490,22 @@
+       struct wsi_memory_signal_submit_info mem_signal;
+       bool has_signal_dma_buf = false;
+       bool explicit_sync = swapchain->image_info.explicit_sync;
+-      if (explicit_sync) {
++      /* Process-only diagnostic: keep native DMA-BUF images, replace the
++       * producer's implicit-fence publication with a checked CPU fence wait.
++       * Never silently apply this mode to a copy or explicit-sync swapchain.
++       */
++      const char *gb_present_mode = getenv("GB_VENUS_PRESENT_SYNC_V1");
++      const bool gb_cpu_present = gb_present_mode &&
++         !strcmp(gb_present_mode, "cpu");
++      if (gb_cpu_present && (wsi->sw || explicit_sync ||
++                             swapchain->blit.type != WSI_SWAPCHAIN_NO_BLIT)) {
++         result = VK_ERROR_FEATURE_NOT_PRESENT;
++         goto fail_present;
++      }
++      if (gb_cpu_present) {
++         /* The normal application wait semaphores above are retained. No
++          * export semaphore or legacy WSI-memory signal is attached here. */
++      } else if (explicit_sync) {
+          /* We will signal this acquire value ourselves when GPU work is done. */
+          image->explicit_sync[WSI_ES_ACQUIRE].timeline++;
+          /* The compositor will signal this value when it is done with the image. */
+@@ -1537,6 +1552,18 @@
+       result = wsi->QueueSubmit(submit_queue, 1, &submit_info, fence);
+       if (result != VK_SUCCESS)
+          goto fail_present;
++
++      if (gb_cpu_present) {
++         result = wsi->WaitForFences(device, 1, &fence, true, 2000000000ull);
++         if (result != VK_SUCCESS) {
++            fprintf(stderr, "GB-WSI-PRESENT: native CPU fence wait failed: %d\n", result);
++            if (result == VK_TIMEOUT)
++               result = VK_ERROR_UNKNOWN;
++            goto fail_present;
++         }
++         if (current_frame < 4)
++            fprintf(stderr, "GB-WSI-PRESENT: native render fence waited; no export semaphore\n");
++      }
+ 
+       /* The app can only submit images they have acquired. */
+       assert(image->acquired);

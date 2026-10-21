@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "source_version": "25.0.7-2+deb13u1",
+  "files": [
+    {
+      "path": "src/gallium/drivers/virgl/virgl_screen.c",
+      "sha256": "9139df3fac37f9133045ba1eae632da9b02f70da64fdc54c1ddddf1aeaf2d03e",
+      "result_sha256": "789abc38db3ccb96ea584f8810a489e3df0b760d855871a9b356665acf4ed961"
+    },
+    {
+      "path": "src/gallium/drivers/virgl/virgl_screen.h",
+      "sha256": "933e7406697533ff62a02bdeac4d065cef3c7d4ef34164ade50b1f3250984496",
+      "result_sha256": "a6e4ce8cd756d3799543b924db89700dfba8aba9d3e39eee1b46b45684c44e03"
+    }
+  ],
+  "patch_sha256": "9ec596a9d9e8c592782d3a8e65e043ebdf309bc5f844babe83a1c7280ef35db7",
+  "scope": "Process-only opt-in explicit LINEAR modifier query for four independently qualified Android bridge formats; preserve default virgl behavior",
+  "opt_in": {
+    "GB_VIRGL_ANDROID_LINEAR_V1": "qualified-linear-rgbx-v1"
+  },
+  "required_host_renderer_sha256": "87dbb3ec4f1af1feaab5422d55203dd74a94b94d7c3c559390eed5f5c5161adf",
+  "required_host_bridge_manifest": "patches/tb710fu/virglrenderer/android-image-opaque-formats.json",
+  "host_renderer_check_required_before_activation": true,
+  "implicit_modifiers_accepted_in_profile": false,
+  "nonlinear_modifiers_accepted": false,
+  "installed": false,
+  "build_verified": true,
+  "guest_runtime_verified": true,
+  "presentation_verified": false,
+  "license": "MIT; full original Mesa notices retained",
+  "host_callback_tests_passed": true,
+  "default_guest_rendering_verified": true,
+  "modifier_profile_runtime_verified": true,
+  "matched_private_graphics_bundle_required": true,
+  "guest_profile_source": "build-v9/output/stage/usr/lib/aarch64-linux-gnu",
+  "runtime_report": "docs/tb710fu-linear-modifier-profile-20261020.json",
+  "conditions": {
+    "android_build_selects": "src/vrend_winsys_gbm_stubs.c",
+    "donor_fingerprint": "Dell/mica/mica:17/CL3B.260622.273.R1/16471258:user/release-keys",
+    "vendor_fingerprint": "Lenovo/TB710FU/TB710FU:16/BP2A.250605.031.A3/ZUI_17.5.04.059_260327_ROW:user/release-keys"
+  },
+  "runtime_guard_contract": [
+    "Verify device serial and current donor/vendor fingerprints",
+    "Verify installed private host renderer SHA-256 and runtime inventory",
+    "Verify all five owned guest private library SHA-256 values before controlled DRM compositor activation",
+    "Scope profile to controlled compositor; preserve and restore its prior environment and configuration"
+  ],
+  "private_guest_bundle": {
+    "usr/lib/aarch64-linux-gnu/libEGL.so.1": {
+      "sha256": "5c62fb066246e49c9a605fa85e2fa09a8ba201e727a332f1967c3a00ab46c051",
+      "bytes": 311880
+    },
+    "usr/lib/aarch64-linux-gnu/libGLESv2.so.2": {
+      "sha256": "1b821eac9679c967f6aacf8f0f5f1e8e628ac19de43a25147115ee81ff7f802c",
+      "bytes": 68472
+    },
+    "usr/lib/aarch64-linux-gnu/libgallium-25.0.7.so": {
+      "sha256": "f5d91cc3453eddebc7e799658e1a66be660effac81e55bf63471edaed5f021ce",
+      "bytes": 15975304
+    },
+    "usr/lib/aarch64-linux-gnu/libgbm.so.1": {
+      "sha256": "63934e140a918427305f0c7b307aae2d65397e6dd48b5de09c650eb6fb6d994d",
+      "bytes": 20736
+    },
+    "usr/lib/aarch64-linux-gnu/dri_gbm.so": {
+      "sha256": "e8c75d8e0b421564388fdae314c673c0081792d62480cf22fed2f5ae24d142c4",
+      "bytes": 60944
+    }
+  },
+  "compositor_runtime_verified": true,
+  "runtime_scope": "Owned explicit EGL import verifies four formats and 12,288 pixels; controlled original DRM/GL Weston maps the matched five-library closure and advertises four LINEAR formats; native XRGB window opens but repeated frames remain stale, so continuous presentation is unverified. Prior compositor configuration restored.",
+  "gbm_backend_override_required": true,
+  "compositor_environment": {
+    "LD_LIBRARY_PATH": "owned_private_bundle",
+    "GBM_BACKENDS_PATH": "owned_private_bundle",
+    "GB_VIRGL_ANDROID_LINEAR_V1": "qualified-linear-rgbx-v1"
+  },
+  "retained_native_image_color_updates_verified": true,
+  "verified_image_reuse_scope": "Three completed Vulkan transfer clears, one retained XRGB/LINEAR wl_buffer alternating with an independently allocated DMA-BUF;32x32 and640x480; no native Vulkan swapchain qualification"
+}

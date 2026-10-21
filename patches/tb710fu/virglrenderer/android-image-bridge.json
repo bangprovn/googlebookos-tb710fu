@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "revision": "718f00f8b0483112f804925cf51576a8cade8046",
+  "patch_sha256": "d3c71228e2133078e158625f319f694a16e710b74b5b280380de14a69d419632",
+  "files": [
+    {
+      "path": "src/vrend_renderer.c",
+      "sha256": "df874c0df95253c9972ea54de11c888f4c7be2f2de6faefdb5cb5d42be4b87a0",
+      "result_sha256": "2652980cd6348c1eec9deb6b8ec4d6dfebbd9e8144ddb641664d997b9f098514"
+    },
+    {
+      "path": "src/vrend_renderer.h",
+      "sha256": "92494e3fe91e1109d7e8741b7dc31df66b9cd2617f844b52c3307f30cf53838e",
+      "result_sha256": "3f5673b3be754f61e55d14b534751acd4ca06f2d445497757df86d17dd7c5ada"
+    },
+    {
+      "path": "src/vrend_winsys_egl.c",
+      "sha256": "3af820e584d5c7e0b8813aafd0426cc48a0c5a58a60f0cb110e2f33b298d647b",
+      "result_sha256": "1e4bcde3bfb7951e34a0f0299bb145e1ecd0c7342198114ad6a9ff01b781d6e6"
+    },
+    {
+      "path": "src/vrend_winsys_egl.h",
+      "sha256": "02b7760a95d2d9346c0ff9c18a5c04f4b024b25df3e446a19b54d6732213bda2",
+      "result_sha256": "296fa8ea4d2f8d7ccefefe358c8d03dcd88bae2cced59d571916b28b0b28877f"
+    }
+  ],
+  "payloads": [
+    {
+      "path": "src/gb_android_image_bridge.h",
+      "input": "gb_android_image_bridge.h",
+      "sha256": "c206912d64996bc63211bfee6ee5cff3dde8a3b175f182f48dae8250bf6cce2e"
+    },
+    {
+      "path": "src/gb_vulkan_android.h",
+      "input": "gb_vulkan_android.h",
+      "sha256": "298808a42c18f61a43d9c74beb91815c52f1808b41e4881c0a448f32ff6aa5cc"
+    }
+  ],
+  "conditions": {
+    "donor_fingerprint": "Dell/mica/mica:17/CL3B.260622.273.R1/16471258:user/release-keys",
+    "vendor_fingerprint": "Lenovo/TB710FU/TB710FU:16/BP2A.250605.031.A3/ZUI_17.5.04.059_260327_ROW:user/release-keys",
+    "host_architecture": "aarch64",
+    "activation": "GB_ANDROID_IMAGE_BRIDGE_V1=diagnostic-linear-v1",
+    "backend": "Android EGL missing Linux DMA-BUF import, with native-buffer import and linear colorspace"
+  },
+  "licenses": {
+    "adapter": "MIT",
+    "gb_vulkan_android.h": "Apache-2.0; Khronos public header retained verbatim"
+  },
+  "scope": "Diagnostic read-only guest linear RGBA/BGRA image import through GPU copy to AHB; synchronous GL read scopes, no CPU image mapping/copy",
+  "limits": {
+    "maximum_extent": 8192,
+    "maximum_source_bytes": 33554432,
+    "maximum_destination_bytes": 33554432,
+    "maximum_live_or_quarantined_bridges": 4,
+    "source_sync_file_poll_ms": 2000,
+    "copy_fence_wait_ns": 2000000000,
+    "metadata_records": 32
+  },
+  "producer_contract": "Explicit completed producer, GENERAL layout and FOREIGN_EXT ownership; resv wait alone does not prove arbitrary asynchronous producers",
+  "unsupported": [
+    "XRGB/HDR/sRGB/multiplanar/nonlinear images",
+    "Host writes and image load/store access",
+    "Re-exporting the AHB as incoming guest storage",
+    "General asynchronous producer/display fencing",
+    "Concurrent/asynchronous context use remains unqualified"
+  ],
+  "pending_submissions": "Storage and slot quarantined if completion cannot be proven; no unsafe free or unbounded wait",
+  "installed": true,
+  "runtime_verified": true,
+  "host_mock_verified": true,
+  "public_ahb_abi_verified": true,
+  "source_requirements": {
+    "src/venus/vkr_context.c": "9537bf89284680e23b0c0ece9eeb0ca202d65a64bce371387a27b341a398aa8a"
+  },
+  "source_isolation": "Do not include the separately prepared uninstalled SHM-collapse candidate; use the pinned original vkr_context.c via read-only build overlay if the shared checkout contains that experiment.",
+  "read_completion": "GNU cleanup read scopes call glFinish on every normal/early return after a bridged GL read; creator-side import bookkeeping also finishes before publication.",
+  "explicit_layout": "Unknown/implicit modifiers are refused. Diagnostic guest producer sends its independently queried LINEAR modifier explicitly; enumeration remains a separate observation.",
+  "egl_texture_binding": "Use the previously qualified glEGLImageTargetTexture2DOES path for bridge-owned AHB images, check its GL error and reject unsupported storage; preserve other resources.",
+  "runtime_report": "docs/tb710fu-android-gbm-format-20261020.json",
+  "runtime_status": "Controlled guest image shader sampling verified, native presentation pending",
+  "runtime_scope": "Actual incoming 32x32 linear RGBA8 source to AHB GPU copy and shader sampling across three completed producer rounds, 3072 pixels. No native window or arbitrary async producer claim."
+}

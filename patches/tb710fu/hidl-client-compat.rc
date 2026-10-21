@@ -1,0 +1,7 @@
+# The retained Lenovo manager predates initialization of
+# hwservicemanager.disabled=false. Mica's libhwbinder otherwise waits forever
+# for that property because its build.prop promises the newer behavior.
+# Describe the retained implementation accurately: clients must still wait for
+# the real manager to publish hwservicemanager.ready=true. Never synthesize it.
+on early-init
+    setprop hwservicemanager.always_sets_disabled false

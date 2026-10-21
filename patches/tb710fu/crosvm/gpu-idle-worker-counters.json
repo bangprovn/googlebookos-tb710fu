@@ -1,0 +1,119 @@
+{
+  "schema_version": 1,
+  "revision": 2,
+  "state": "candidate_built_matched_uninstalled",
+  "scope": "Process-opt-in bounded worker wake/queue-progress/flip observations; not an idle CPU fix or proof of spin",
+  "files": [
+    {
+      "path": "devices/src/virtio/gpu/mod.rs",
+      "base_path": "artifacts/source/crosvm-android16qpr2-backend/external/crosvm/devices/src/virtio/gpu/mod.rs",
+      "sha256": "74b593f2753435f26824433c7d3288fddd8599e0e80606677e86382cdc9740fe",
+      "result_sha256": "c38c269999ad614c696845163956f207d724e0f710ce89947910bb06e8681660"
+    }
+  ],
+  "patch_sha256": "32874154a0e0690b5955ba920008d88a322205e4dc0d1cfdcd2495024a53c417",
+  "opt_in": {
+    "GB_GPU_IDLE_TRACE_V1": "worker-counters-v1"
+  },
+  "maximum_records_per_process": 16,
+  "maximum_record_bytes_tested": 2048,
+  "minimum_nonfinal_interval_seconds": 5,
+  "logging_trigger": "Only existing worker wake/processing, Sleep or Kill; no timer, thread, sleep or event changes",
+  "measurement_scope": {
+    "waits": "Completed wait calls, empty waits and wall durations; quick <=100us is not CPU spin proof",
+    "readable_tokens": "Counts per token for events existing handler already processes; ResourceBridge indices aggregate without IDs",
+    "queue_progress_batches": "process_queue returned true, meaning at least one descriptor returned; not a command or frame count; zero does not prove no commands because fenced descriptors may remain parked",
+    "flip_pending_peak": "Maximum pending vector length seen immediately before existing completion sweep",
+    "flip_retired": "Before-after pending vector shrink at existing completion sweep; not signaled-vs-expired distinction",
+    "work_ns": "Wall time processing per existing iteration; not task CPU time, GPU time or driver performance"
+  },
+  "scheduling_policy_changed": false,
+  "fence_policy_changed": false,
+  "quota_changed": false,
+  "event_handling_changed": false,
+  "native_build_verified": true,
+  "installed": false,
+  "runtime_verified": false,
+  "idle_cpu_fixed": false,
+  "previous_kill_culprit_identified": false,
+  "native_binary_reference_sha256": "3f4dd9a986b612c0d759f4827d38f04da0ce40ef8142c9db3b820b68779c849a",
+  "source_revision": "849e05f12d5c8d4c36af8e15763986d242cd43b5",
+  "source_applicability": "GPU file matches tracked849e source; matched incremental builds reproduce installed native3f4dd and outer678fad before compiling the diagnostic pair. Exact source/tool/dependency pins and negative attempts are retained in build_validation; runtime remains unverified.",
+  "license": "Inherited ChromiumOS BSD3-clause; source notice retained. Fixture embeds complete pinned LICENSE conditions/disclaimer.",
+  "host_validation": {
+    "state": "passed",
+    "command": "PYTHONDONTWRITEBYTECODE=1 python3 tests/gpu_idle_worker_counters.py -v",
+    "python_tests_passed": 4,
+    "actual_helper_scenarios": 6,
+    "rust_warnings_denied": true,
+    "rust_overflow_checks": true,
+    "patch_apply_reverse_reapply_zero_fuzz": true,
+    "stripped_instrumentation_byte_identical_to_base": true,
+    "actual_source_extracted": [
+      "GpuIdleCounters methods",
+      "gpu_idle_checkpoint",
+      "WorkerToken variants"
+    ],
+    "mocked": [
+      "info logging sink",
+      "event calls supplied by host scenarios; not complete native GPU worker execution"
+    ],
+    "maximum_emitted_records_in_concurrent_8worker_32attempt_test": 16,
+    "maximum_json_line_bytes_tested": 2048,
+    "native_build_performed": false,
+    "scope": "Host helper tests only; separate build_validation records actual matched native and adapter builds."
+  },
+  "host_inputs": {
+    "tests/gpu_idle_worker_counters.py": "6d0de694c459385d09db47b181b592dead97a12a2744165e1c320b9fbd83f107",
+    "tests/fixtures/gpu_idle_worker_counters.rs": "b681c764421be963aa91727b271bb01217e6ae8fedceebaf98ab85be33b3e76d",
+    "artifacts/source/crosvm-android16qpr2-backend/external/crosvm/LICENSE": "c1d1dea1a52ff09809c990efd95cbcd0dd98f9bd52a58d5c09cfbac218e32511"
+  },
+  "budget_exhaustion": "After shared16record cap, checkpoint disables local collection and new opted-in workers decline collection; cap is never reset by worker recreation.",
+  "support_inputs": {
+    "artifacts/device/first-boot-20261013/terminal-investigation-20261018-v1/backend-fix-v79-owned-cpu-frame-resume/source-build-result.json": "18a48e495ef564d825f137c293d4901f002bed42f58f96ecaa8f5f4d53e59fea",
+    "artifacts/device/first-boot-20261013/terminal-investigation-20261018-v1/backend-fix-v79-owned-cpu-frame-resume/source-preparation.json": "ccc5e0a79a1057915f683c2579dfaf141d49f094022a257749d48b267dc991c5",
+    "artifacts/source/crosvm-android16qpr2-backend/external/crosvm/rutabaga_gfx/src/virgl_renderer.rs": "6567a1732b8e1bb4032f4f48a4b62953e5aa3bb1143b94b7a4173979220b2cc8",
+    "artifacts/source/crosvm-android16qpr2-backend/external/crosvm/gpu_display/src/gpu_display_android.rs": "9eb84561afd92d0d2eb15cc922c88e17a0259612fb324ad8fabe701fa949b2cb"
+  },
+  "minimum_nonfinal_interval_scope": "Per enabled worker; shared process cap still16 even across concurrent/recreated workers. Final Sleep/Kill record bypasses interval but not cap.",
+  "limitations": [
+    "Diagnostic candidate only; not a CPU repair, busy-loop proof, frame/presentation count, GPU performance metric or previous-kill culprit identification.",
+    "Real guest workload/UI was uncontrolled during prior CPU sampling; sustained v_gpu CPU can reflect legitimate rendering.",
+    "Wall durations include scheduling; quickwaits alone do not establish spin. Queueprogress records used-descriptor returns; zero can also mean parked fenced work.",
+    "Finalrecord is attempted only on normal worker Sleep/Kill token handling, not guaranteed on errors/process death or after recordcap.",
+    "Matched incremental native and outer adapter builds passed separately; these host fixtures still do not execute the full GPU worker, driver or Android runtime. No clean-room AOSP rebuild claim.",
+    "Exact-token outer adapter and native pair are built. Image integration and physical acceptance require separate evidence; guest environment cannot enable native-host diagnostics."
+  ],
+  "build_validation": {
+    "state": "passed",
+    "matched_pair_provenance": "artifacts/device/first-boot-20261013/gpu-idle-native-build-20261020-v1/matched-pair-provenance.json",
+    "matched_pair_provenance_sha256": "614672e5cb4920549e6084beb924353a0e88f3cf34ef5990a5ac395554574bbe",
+    "native_baseline": {
+      "path": "artifacts/device/first-boot-20261013/gpu-idle-native-build-20261020-v1/baseline-build-v1/crosvm",
+      "sha256": "3f4dd9a986b612c0d759f4827d38f04da0ce40ef8142c9db3b820b68779c849a",
+      "bytes": 13099008
+    },
+    "native_candidate": {
+      "path": "artifacts/device/first-boot-20261013/gpu-idle-native-build-20261020-v1/candidate-build-retry-v1/crosvm",
+      "sha256": "a783eaa4c45562478bd7aeacc6b745bc4622903286b842c0046a020fedba8365",
+      "bytes": 13083256
+    },
+    "outer_adapter_baseline": {
+      "path": "artifacts/device/first-boot-20261013/gpu-idle-native-build-20261020-v1/adapter-workspace-baseline-build-v1/crosvm-runtime-adapter",
+      "sha256": "678fad1b81b795a97cae2b44fcd39a6e3d7f8faa1ea1df0cf52a9d5a591e7084",
+      "bytes": 659896
+    },
+    "outer_adapter_candidate": {
+      "path": "artifacts/device/first-boot-20261013/gpu-idle-native-build-20261020-v1/adapter-workspace-candidate-build-v1/crosvm-runtime-adapter",
+      "sha256": "3a354da2c94ef9d4b7e2aed9c16c9151e16e0c70f92ac9f6d98659dd1637783d",
+      "bytes": 660432
+    },
+    "native_dynamic_abi_equal": true,
+    "new_native_undefined_symbols": [],
+    "incremental_not_clean_room": true,
+    "runtime_verified": false,
+    "negative_attempts_preserved": true,
+    "native_token_contiguous_in_optimized_elf": false,
+    "token_validation": "Exact predicate source-pinned/host-tested; native prefix and environment key present once each. Adapter contains exact complete token."
+  }
+}

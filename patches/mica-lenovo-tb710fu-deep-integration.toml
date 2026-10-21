@@ -1,0 +1,45 @@
+schema_version = 1
+id = "mica-desktop-on-lenovo-tb710fu"
+revision = 3
+donor_source_sha256 = "2ab9922af37819724cfcca54b0aed1be2d4e8f844623c47e9550e91e37c1255c"
+target_source_sha256 = "deff792fc7fa6d20f52667a9a3d2c8d2f2614605f66b8ffee28e41fa63e07c40"
+
+# Verified filesystem contents select system_a. system_b contains factory preloads
+# and precompiled app artifacts, not the desktop framework; its mount integration
+# must be investigated separately. This is a validation plan, not a flash recipe.
+[partitions.system]
+donor = "system_a"
+target = "system_a"
+
+[partitions.product]
+donor = "product_a"
+target = "product_a"
+
+[partitions.system_ext]
+donor = "system_ext_a"
+target = "system_ext_a"
+
+# Preserve the signed VNDK snapshot used by the tablet's Android 14 vendor ABI.
+[[retain_target_apex]]
+name = "com.android.vndk.v34"
+sha256 = "c3578f3e3e7c225d1f475c177ce8cd035cea7194d15d830967aa8f329bdef2ab"
+
+# Add the original stock VNDK declaration only with its retained ABI snapshot.
+[[vintf_merges]]
+donor_path = "system_ext_a/etc/vintf/manifest.xml"
+target_path = "system_ext_a/etc/vintf/manifest.xml"
+donor_sha256 = "e111dd3c1ad4040e1ff1563e0237243a275d1f88a3a6d708d09637ae50d837e7"
+target_sha256 = "6a0ba8db62519cc63ad78c9aa9b5227c4007a6e8617152aeb88d6f1762a95b48"
+operation = { kind = "retained_vndk", version = 34 }
+
+# Preserve desktop requirements and append the stock hardware extensions.
+[[vintf_merges]]
+donor_path = "system_a/system/etc/vintf/compatibility_matrix.device.xml"
+target_path = "system_a/system/etc/vintf/compatibility_matrix.device.xml"
+donor_sha256 = "76b9e85cfebc89eda3a16be621d9087ebd2ab937f0250cc98d77b9b0c46b4158"
+target_sha256 = "171e94936bf0153881540bc8223029d86dd677c32ae4550252dfd45193fcb6b2"
+operation = { kind = "hal_declarations", names = ["android.hardware.media.c2", "vendor.dolby.dvs", "vendor.dolby.hardware.dms", "vendor.lenovo.hardware.battery", "vendor.lenovo.hardware.display", "vendor.lenovo.hardware.factory", "vendor.lenovo.hardware.hyperschedule", "vendor.lenovo.hardware.keyboard", "vendor.lenovo.hardware.misc", "vendor.lenovo.hardware.performance", "vendor.lenovo.hardware.touchscreen", "vendor.lenovo.hardware.usb"], device_extensions = [
+{ path = "vendor_a/etc/vintf/manifest/vendor.lenovo.hardware.battery-service.xml", sha256 = "92ede823cb770645416a518756a6729fa28bf8edb1d9414f0b9e5afbdbde7620" },
+{ path = "vendor_a/etc/vintf/manifest/vendor.lenovo.hardware.hyperschedule-service.xml", sha256 = "2eeb371ae7439e6e02f8dc587a61e71793ca91bbba162d3b3ab5e55e74c10c91" },
+{ path = "vendor_a/etc/vintf/manifest/vendor.lenovo.hardware.touchscreen-service.xml", sha256 = "ed95ee72b52c027ac678028310c392deb90e71e21563eb593247a7d420561e47" }
+] }

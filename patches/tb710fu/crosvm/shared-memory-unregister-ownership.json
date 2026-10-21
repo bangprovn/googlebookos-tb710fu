@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "revision": 1,
+  "base_source": "artifacts/source/crosvm-android16qpr2-backend/external/crosvm",
+  "files": [
+    {
+      "path": "devices/src/virtio/virtio_pci_device.rs",
+      "sha256": "1dd74927629d57757791daf9ece34831c50c2cbfbeb276ff4c9019a42cd37059",
+      "result_sha256": "af2d8549dd5569a99d60e3102734b0583a7d2869a8397984455086148aa42eb0"
+    }
+  ],
+  "patch_sha256": "4cb723f83ca3d2e252f5777adac3084c04c43f58e083a2fb158f0b79996b664d",
+  "scope": "Preserve VmRequester shared-memory offset-to-region-id ownership until an explicit unregister request succeeds",
+  "owner": "impl SharedMemoryMapper for VmRequester",
+  "behavior": {
+    "unregister_requests_per_call_at_known_offset": 1,
+    "unknown_offset_requests": 0,
+    "failed_unregister_keeps_offset_and_id": true,
+    "successful_unregister_removes_offset": true,
+    "automatic_retry_added": false,
+    "quota_changed": false,
+    "registration_behavior_changed": false,
+    "guest_or_firmware_release_policy_changed": false
+  },
+  "notes": [
+    "The existing &mut self method serializes access to its own map; region id implements Copy.",
+    "vm_control already retains RegisteredMemory on release/reclaim failure. Keeping this mapper id preserves a later explicit caller retry.",
+    "An operation may fail after the peer completes it or during transport. This patch preserves existing error reporting; it does not establish remote release state or add an automatic retry.",
+    "Actual-method host tests use a fake unregister client. They do not execute IPC, Gunyah, GPU, a whole VMM build or physical devices.",
+    "This is a correctness fix for failed unregister ownership; current two-window ENOSPC cause is not proven to involve an unregister failure."
+  ],
+  "license": "BSD-3-Clause; original Crosvm notices retained",
+  "host_actual_method_tests_verified": true,
+  "build_verified": false,
+  "installed": false,
+  "runtime_verified": false,
+  "full_port_verified": false,
+  "host_validation": {
+    "command": "PYTHONDONTWRITEBYTECODE=1 python3 tests/shared_memory_unregister_ownership.py",
+    "python_tests_passed": 1,
+    "actual_method_rust_tests_passed": 4,
+    "baseline_regression_failure_reproduced": true,
+    "rustc_version": "1.93.1",
+    "warnings_denied": true,
+    "scenarios": [
+      "unregister fails first then succeeds on explicit caller retry, preserving exact original id",
+      "unknown offset sends no request",
+      "success removes offset once and preserves other mappings",
+      "three failures preserve ownership with exactly one request per call"
+    ],
+    "scope": "Actual extracted source method with a mock IPC client and Context error adapter; no reimplementation of the method, IPC or kernel/driver execution"
+  }
+}

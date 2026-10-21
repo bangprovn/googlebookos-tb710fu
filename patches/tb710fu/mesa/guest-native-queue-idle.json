@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "source_version": "25.0.7-2+deb13u1",
+  "base_patch": "guest-acquire-syncfd.json",
+  "base_file": "src/virtio/vulkan/vn_wsi.c",
+  "base_sha256": "fd05485569c8681de4069aa4fb7b2d5c30fa228d47826e1254cc5f9651fb11f5",
+  "result_sha256": "3734718a04118a4e67a4ceab99790f989de38651b52bf23fc7cd7a195bed5042",
+  "patch_sha256": "bfcdd034f574a219ba3edec7fea877400f86a8236fa3b5791f4fb4d1241143e8",
+  "helper_sha256": "d947eb0fe56defca67e42841bedb0bc6f21cbb7a910900b949900077cc7b2ac0",
+  "opt_in": {
+    "GB_VENUS_NATIVE_QUEUE_WAIT_V1": "idle",
+    "GB_VENUS_PRESENT_SYNC_V1": "cpu"
+  },
+  "scope": "Owned native diagnostic child only; full queue idle before checked CPU-fence presentation; no pixel copy",
+  "outer_child_deadline_seconds": 55,
+  "api_wait_has_timeout": false,
+  "installed": false,
+  "build_verified": true,
+  "runtime_executed": true,
+  "presentation_verified": false,
+  "license": "MIT; original Mesa source notices retained",
+  "candidate_sha256": "a8257d39457563b21cc656b8af594464f8a116925dc60856547a902ad8bc0a6f",
+  "incremental_build_seconds": 3.808,
+  "status": "did_not_restore_continuous_presentation",
+  "runtime_report": "docs/tb710fu-native-refresh-20261020.json"
+}

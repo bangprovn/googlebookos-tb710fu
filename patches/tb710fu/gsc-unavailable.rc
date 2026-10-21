@@ -1,0 +1,11 @@
+# Lenovo TB710FU adaptation for the pinned diagnostic kernel with no TPM driver.
+# The donor's GSC backend aborts repeatedly without /dev/tpm0. Keep its binary,
+# interface declaration and security policy intact; do not substitute a TPM or
+# claim GSC-backed functionality. Target QTI KeyMint/Gatekeeper remain unchanged.
+# This override only prevents class_start from launching the unavailable backend.
+service android.system.desktop.security.gscd /system/bin/gscd
+    override
+    class early_hal
+    user hsm
+    group hsm
+    disabled

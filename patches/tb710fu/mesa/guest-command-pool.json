@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "path": "artifacts/source/mesa-25.0.7-debian-pool-v1/mesa-25.0.7/src/virtio/vulkan/vn_instance.c",
+  "sha256": "1a2d4963506a6b891857246c993729ff88658a63112cb7f1a6b74a93323967c4",
+  "result_sha256": "3fa3a0fd29911d275a404b735932262ccb0688a9abc0b53d46282b584bbbb4eb",
+  "patch_sha256": "b9fc7b55d6e50d4126b49f86ce21c75dc4c6d2d3262ba2cd918737e8c5a384f5",
+  "source_version": "25.0.7-2+deb13u1",
+  "license": "MIT per retained source header",
+  "original_guest_library_sha256": "35b776fa357b480586d6e69b4b6ed7fd6fd9115ee652325816095eca442bef47",
+  "scope": "Opt-in one MiB command SHM pool minimum; stock default and growth remain intact; existing reply pool, host guards and guest protocol unchanged",
+  "policy_environment": {
+    "name": "GB_VENUS_COMMAND_POOL_V1",
+    "supported_opt_in": "1m",
+    "opt_in_minimum_bytes": 1048576,
+    "default_minimum_bytes": 8388608
+  },
+  "installed": true,
+  "runtime_verified": true,
+  "gpu_work_verified": true,
+  "unchanged_pool_allocator_sha256": "53fdb195e751bf13366540576b99e0c600a4f8585ba51db6c73e6545962fbe75",
+  "runtime_scope": "Five bounded 4 KiB Venus buffer fill/fence/readback passes including normal asynchronous mode and fresh guest boot; shader and presentation unqualified",
+  "runtime_report": "docs/tb710fu-venus-command-pool-20261020.json",
+  "host_unit_verified": true
+}

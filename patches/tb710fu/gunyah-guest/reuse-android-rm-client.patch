@@ -1,0 +1,225 @@
+--- a/gunyah_guest/gunyah_guest.c
++++ b/gunyah_guest/gunyah_guest.c
+@@ -6,9 +6,9 @@
+  *   A (protected) guest cannot receive a runtime stage-2 mapping pushed by the
+  *   host: the guest owns its own stage-2. Instead the host SHARE's a memparcel and
+  *   the guest ACCEPTs it here, mapping it into its own stage-2 at a chosen IPA.
+- *   The RM msgq is driven with raw HVC hypercalls (no Gunyah driver dependency);
+- *   the tx/rx capability ids come from the RM-generated "gunyah-resource-manager"
+- *   DT node (reg = <tx_capid rx_capid>). The accept/release primitives are
++ *   This Android-6.12 adaptation reuses the built-in Resource Manager client;
++ *   it retains ownership of message queues, IRQs and RPC sequence numbers.
++ *   The accept/release primitives are
+  *   EXPORT_SYMBOL_GPL'd for in-kernel consumers -- notably virtio-gpu's
+  *   VmAccept::Off padding path, which drives its own accepts.
+  *
+@@ -35,7 +35,8 @@
+ 
+ #define pr_fmt(fmt) "gunyah_guest: " fmt
+ 
+-#include <linux/arm-smccc.h>
++#include <linux/auxiliary_bus.h>
++#include "rsc_mgr.h"
+ #include <linux/delay.h>
+ #include <linux/export.h>
+ #include <linux/gunyah_guest.h>
+@@ -58,15 +59,6 @@
+  * Part 1: RM client (raw-HVC msgq)
+  * ====================================================================== */
+ 
+-/* Gunyah hypercall IDs: vendor-hyp fast SMC64 calls. */
+-#define GH_HCALL(fn)							\
+-	ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL, ARM_SMCCC_SMC_64,	\
+-			   ARM_SMCCC_OWNER_VENDOR_HYP, (fn))
+-#define GH_HCALL_MSGQ_SEND	GH_HCALL(0x801B)
+-#define GH_HCALL_MSGQ_RECV	GH_HCALL(0x801C)
+-#define GH_MSGQ_TX_PUSH		BIT(0)
+-#define GH_ERROR_OK		0
+-
+ /* RM RPC framing. */
+ #define GH_RM_RPC_API		0x21	/* version 1 | hdr_words 2 (<<4) */
+ #define GH_RM_RPC_TYPE_REQUEST	0x01
+@@ -76,7 +68,6 @@
+ #define GH_RM_RPC_MEM_ACCEPT	0x51000011
+ #define GH_RM_RPC_MEM_RELEASE	0x51000014
+ 
+-#define GH_RM_MSGQ_MSG_SIZE	240
+ 
+ /* MEM_ACCEPT constants (production form proven in bring-up). */
+ #define GH_RM_MEM_TYPE_NORMAL	0
+@@ -84,68 +75,41 @@
+ #define GH_RM_MEM_ACCEPT_MAP_IPA_CONTIGUOUS	BIT(4)
+ #define GH_RM_MEM_ACCEPT_DONE			BIT(7)
+ 
+-struct gh_rpc_reply {
+-	u8 api;
+-	u8 type;
+-	__le16 seq;
+-	__le32 msg_id;
+-	__le32 err_code;
+-} __packed;
+-
+-static u64 gg_tx_capid, gg_rx_capid;
++static struct auxiliary_device *gg_rm_adev;
++static struct gunyah_rm *gg_rm;
+ static bool gg_ready;
+ static u16 gg_seq = 1;
+ static DEFINE_MUTEX(gg_lock);
+ static u8 gg_txbuf[64] __aligned(8);
+-static u8 gg_rxbuf[GH_RM_MSGQ_MSG_SIZE] __aligned(8);
+-
+-static int gg_msgq_send(u64 capid, void *buff, size_t size)
+-{
+-	struct arm_smccc_res res;
+-
+-	arm_smccc_1_1_hvc(GH_HCALL_MSGQ_SEND, capid, size, (uintptr_t)buff,
+-			  GH_MSGQ_TX_PUSH, 0, &res);
+-	return (int)res.a0;
+-}
+-
+-static int gg_msgq_recv(u64 capid, void *buff, size_t size, size_t *recv_size)
+-{
+-	struct arm_smccc_res res;
+-
+-	arm_smccc_1_1_hvc(GH_HCALL_MSGQ_RECV, capid, (uintptr_t)buff, size,
+-			  0, &res);
+-	if (res.a0 == GH_ERROR_OK)
+-		*recv_size = res.a1;
+-	return (int)res.a0;
+-}
+-
+-/* Send @txlen bytes, poll for the REPLY matching @seq, return RM err_code. */
++
++/* The installed Android server kernel already owns the RM IRQs/msgq.
++ * Route through its sequence allocator and RX dispatch; polling the same RX
++ * queue here races with that client and loses replies. The local 8-byte header
++ * is only a builder template; gunyah_rm_call creates the actual RPC framing.
++ */
+ static int gg_rpc(size_t txlen, u16 seq, u32 *err_code)
+ {
+-	struct gh_rpc_reply *r = (void *)gg_rxbuf;
+-	size_t rxlen = 0;
+-	int err, i;
+-
+-	err = gg_msgq_send(gg_tx_capid, gg_txbuf, txlen);
+-	if (err) {
+-		pr_err("msgq_send failed: gunyah_error=%d\n", err);
+-		return -EIO;
+-	}
+-
+-	for (i = 0; i < 2000; i++) {
+-		rxlen = 0;
+-		err = gg_msgq_recv(gg_rx_capid, gg_rxbuf, sizeof(gg_rxbuf),
+-				   &rxlen);
+-		if (err == GH_ERROR_OK && rxlen >= sizeof(*r) &&
+-		    (r->type & GH_RM_RPC_TYPE_MASK) == GH_RM_RPC_TYPE_REPLY &&
+-		    le16_to_cpu(r->seq) == seq) {
+-			*err_code = le32_to_cpu(r->err_code);
+-			return 0;
+-		}
+-		udelay(100);
+-	}
+-	pr_err("RPC timeout (last gunyah_error=%d)\n", err);
+-	return -ETIMEDOUT;
++	void *response = NULL;
++	size_t response_size = 0;
++	u32 id;
++	int ret;
++
++	if (!gg_rm || txlen < 8 || txlen > sizeof(gg_txbuf) ||
++	    gg_txbuf[0] != GH_RM_RPC_API ||
++	    gg_txbuf[1] != GH_RM_RPC_TYPE_REQUEST ||
++	    get_unaligned_le16(gg_txbuf + 2) != seq)
++		return -EINVAL;
++	id = get_unaligned_le32(gg_txbuf + 4);
++	if (id != GH_RM_RPC_MEM_ACCEPT && id != GH_RM_RPC_MEM_RELEASE)
++		return -EINVAL;
++
++	*err_code = 0;
++	ret = gunyah_rm_call(gg_rm, id, gg_txbuf + 8, txlen - 8,
++			     &response, &response_size);
++	kfree(response);
++	pr_info_ratelimited("shared RM call id=%#x ret=%d response_bytes=%zu\n",
++			    id, ret, response_size);
++	return ret;
+ }
+ 
+ bool gunyah_guest_available(void)
+@@ -754,40 +718,43 @@
+ 
+ static int __init gunyah_guest_init(void)
+ {
+-	struct device_node *np;
+ 	int ret;
+ 
+-	/* Part 1: bring up the RM client (never fatal -- a guest with no RM node
+-	 * just leaves gunyah_guest_available() false). */
+-	np = of_find_compatible_node(NULL, NULL, "gunyah-resource-manager");
+-	if (!np) {
+-		pr_info("no \"gunyah-resource-manager\" DT node; RM client disabled\n");
+-	} else if (of_property_read_u64_index(np, "reg", 0, &gg_tx_capid) ||
+-		   of_property_read_u64_index(np, "reg", 1, &gg_rx_capid)) {
+-		pr_info("RM node present but reg=<tx rx> missing\n");
+-		of_node_put(np);
+-	} else {
+-		of_node_put(np);
+-		WRITE_ONCE(gg_ready, true);
+-		pr_info("RM client ready (tx_capid=%llu rx_capid=%llu)\n",
+-			gg_tx_capid, gg_rx_capid);
+-	}
+-
+-	/* Part 2: register the Sync accept transport. This never fails for lack
+-	 * of a device (no matching virtio device -> .probe simply never fires),
+-	 * and even if registration itself failed the exported RM API above must
+-	 * stay live for virtio-gpu, so we log and still return success. */
++	/* This adaptation is qualified only for the exact built-in Android RM
++	 * driver. Do not steal its IRQs, unbind it, or fall back to raw polling.
++	 */
++	if (!IS_BUILTIN(CONFIG_GUNYAH))
++		return -EOPNOTSUPP;
++	gg_rm_adev = auxiliary_find_device(NULL,
++			"gunyah_rsc_mgr.gh_rm_core.0", device_match_name);
++	if (!gg_rm_adev)
++		return -ENODEV;
++	gg_rm = dev_get_platdata(&gg_rm_adev->dev);
++	if (!gg_rm) {
++		put_device(&gg_rm_adev->dev);
++		gg_rm_adev = NULL;
++		return -ENODEV;
++	}
++	WRITE_ONCE(gg_ready, true);
++	pr_info("RM client ready (shared built-in client; raw HVC disabled)\n");
+ 	ret = register_virtio_driver(&vga_driver);
+-	if (ret)
+-		pr_warn("accept transport register failed (%d); RM API still exported\n",
+-			ret);
+-	return 0;
++	if (ret) {
++		WRITE_ONCE(gg_ready, false);
++		gg_rm = NULL;
++		put_device(&gg_rm_adev->dev);
++		gg_rm_adev = NULL;
++	}
++	return ret;
+ }
+ module_init(gunyah_guest_init);
+ 
+ static void __exit gunyah_guest_exit(void)
+ {
+ 	unregister_virtio_driver(&vga_driver);
++	WRITE_ONCE(gg_ready, false);
++	gg_rm = NULL;
++	put_device(&gg_rm_adev->dev);
++	gg_rm_adev = NULL;
+ }
+ module_exit(gunyah_guest_exit);
+ 
+--- a/gunyah_guest/Makefile
++++ b/gunyah_guest/Makefile
+@@ -5,3 +5,6 @@
+ 	$(MAKE) -C $(KDIR) M=$(CURDIR) modules
+ clean:
+ 	$(MAKE) -C $(KDIR) M=$(CURDIR) clean
++
++# Exact Android server kernel Resource Manager API.
++ccflags-y += -I$(srctree)/drivers/virt/gunyah

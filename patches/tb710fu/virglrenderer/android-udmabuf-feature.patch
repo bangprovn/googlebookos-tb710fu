@@ -1,0 +1,15 @@
+--- a/prebuilt-intermediates/config.h
++++ b/prebuilt-intermediates/config.h
+@@ -26,6 +26,12 @@
+ // The glibc host toolchain lacks support for memfd, but bionic supports it,
+ // so this define is enabled only for 'android:' in Android.bp
+ //#define HAVE_MEMFD_CREATE 1
++// Android's Bionic toolchain supplies this UAPI. Without the feature define,
++// Venus silently builds its disabled allocator stub despite a usable kernel
++// device. Keep non-Android and missing-header builds unchanged.
++#if defined(__ANDROID__) && defined(__linux__) && __has_include(<linux/udmabuf.h>)
++#define HAVE_LINUX_UDMABUF_H 1
++#endif
+ #define HAVE_STRTOK_R 1
+ #define HAVE_TIMESPEC_GET 1
+ #define HAVE_SYS_UIO_H 1

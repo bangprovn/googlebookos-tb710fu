@@ -1,0 +1,10 @@
+# The qualified TB710FU kernel/backend exposes no Chrome EC device. The donor
+# EC log daemon restarts every five seconds with ENOENT. Preserve its executable,
+# arguments and privilege configuration, while omitting automatic class start.
+# This does not implement EC logging or disable the tablet's own vendor logging.
+service timberslide /system/bin/timberslide --name cros_ec --log-to-logcat --log-to-file /data/misc/timberslide/cros_ec.log --period-ms 4000
+    override
+    user system
+    group system cros_ec
+    class core
+    disabled

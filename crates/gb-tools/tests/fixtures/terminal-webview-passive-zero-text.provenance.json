@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "scope": "Whitelist-reduced Terminal native and owned WebView metadata; no title or console text, semantic identity or command-execution proof",
+  "original_terminal_apk_sha256": "8bbea541e6f45f8cf530eb78d9b50830113458a6e4220a5e4de9966d0fae5372",
+  "source_receipt": "artifacts/device/first-boot-20261013/android-terminal-ui-observer-20261021-v1/native-shape-diagnostic-v2/reduced-controls.xml",
+  "source_receipt_sha256": "5eb3a615ab9017739be9ce041a5d6515c9a3ef4c8287ce7ad7f8b21f14b8964b",
+  "fixture_sha256": "5eb3a615ab9017739be9ce041a5d6515c9a3ef4c8287ce7ad7f8b21f14b8964b",
+  "fixture_bytes": 19000,
+  "exact_zero_origin_leaf_count": 1,
+  "zero_origin_leaf_attributes": {
+    "class": "android.widget.TextView",
+    "package": "com.android.virtualization.terminal",
+    "clickable": "false",
+    "enabled": "true",
+    "focusable": "false",
+    "focused": "false",
+    "password": "false",
+    "selected": "false",
+    "bounds": "[0,0][0,0]"
+  },
+  "expected_local_tab_count": 2,
+  "expected_selected_index": 1,
+  "expected_strip_bottom": 190,
+  "historical_strip_bottom": 208,
+  "retained_append_geometry_drift_accepted": false,
+  "guest_execution_verified": false
+}

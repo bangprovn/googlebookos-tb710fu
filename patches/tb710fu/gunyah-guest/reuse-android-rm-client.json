@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "upstream_repository": "https://github.com/Droid-VM/droidvm-guest-additions",
+  "revision": "cccd9078ead9bbecc760d5beaae20c26dd4ff5c0",
+  "license": "GPL-2.0-or-later; retain upstream ADDITIONAL-PERMISSIONS",
+  "patch": "reuse-android-rm-client.patch",
+  "patch_sha256": "fafda69ece01d6c93a608fcf9e675c6df705e96b5a81823b6c688bb91f560c2e",
+  "input_files": {
+    "gunyah_guest.c": "ab02645c30cc0011875651f83363ec4a8dc94aa71b3411e0cc2aa4dccba9e366",
+    "Makefile": "41e0bc5303fbc7997cca6d8a6ee498f413620b81f7b4aa2d58c8bfe824366ab6",
+    "linux/gunyah_guest.h": "6e10ad211ef5eadd5d9064c60a29df059f8276c5306dbe9e39e6a01982ce25bc"
+  },
+  "result_files": {
+    "gunyah_guest.c": "5f39284f4b748273150cc977b2fb0b6b12565089915b49d7810022e49bbec2a0",
+    "Makefile": "dbe79f55e021ce29c0f816d700e045de8f42aa4834b66d71859a692b0e2e8d1c",
+    "linux/gunyah_guest.h": "6e10ad211ef5eadd5d9064c60a29df059f8276c5306dbe9e39e6a01982ce25bc"
+  },
+  "conditions": {
+    "device": "TB710FU",
+    "donor_fingerprint": "Dell/mica/mica:17/CL3B.260622.273.R1/16471258:user/release-keys",
+    "vendor_fingerprint": "Lenovo/TB710FU/TB710FU:16/BP2A.250605.031.A3/ZUI_17.5.04.059_260327_ROW:user/release-keys",
+    "guest_kernel": "6.12.93-android16-6-g3a7d1771d492-ab16496487-4k",
+    "guest_kernel_config_sha256": "edff4689d8c1721dcd9d10b2dcac409ecae5ab56f1d8964e3b8e52b1088530bd",
+    "required_builtin": "CONFIG_GUNYAH=y",
+    "required_auxiliary_device": "gunyah_rsc_mgr.gh_rm_core.0",
+    "required_virtio_device_id": 60
+  },
+  "module_sha256": "2c72b99ab59bd6d099bdc7af351565c370abb392c2fa6e8d86262edd43482769",
+  "runtime_memory_accept_and_release_verified": true,
+  "venus_enumeration_verified": true,
+  "vulkan_rendering_verified": false,
+  "persistent_installation": false,
+  "report": "docs/tb710fu-guest-accept-20261019.json"
+}

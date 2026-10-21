@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "source": "Android common kernel android14-6.1",
+  "revision": "48e3cd973485465613da6d71fa17139773546573",
+  "source_url": "https://android.googlesource.com/kernel/common/+/48e3cd973485465613da6d71fa17139773546573/drivers/dma-buf/udmabuf.c?format=TEXT",
+  "path": "drivers/dma-buf/udmabuf.c",
+  "base_sha256": "3d9402f2aa249ad38dc2215951b80d7e62889d083689ea121622584617ac029c",
+  "result_sha256": "3979fe1fcc9de41b46743dccf1874e600e60487354881729bd5ec1b87d1cd129",
+  "patch_sha256": "a9a5280a71a2a31eef80b79823544e62c1e8752f7fa7f9a91e334a8b0f06c0b9",
+  "scope": "Retain mature 6.1 driver; carry official sgtable cache sync helpers and 64-bit size-limit calculation",
+  "license": "GPL-2.0 per retained source SPDX",
+  "runtime_verified": false
+}

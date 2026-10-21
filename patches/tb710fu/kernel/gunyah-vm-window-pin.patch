@@ -1,0 +1,166 @@
+--- a/drivers/virt/gunyah/gb-runtime-share.c
++++ b/drivers/virt/gunyah/gb-runtime-share.c
+@@ -37,6 +37,78 @@
+ static DEFINE_MUTEX(gb_share_lock);
+ static DEFINE_MUTEX(gb_share_device_lock);
+ static bool gb_share_registered;
++
++/* The optional pool permits only one bound VM. Keep its whole-window pin
++ * separate from parcel mappings, which acquire their own pins. Never release
++ * this pin on a failed share or copy_to_user; normal VM teardown releases it
++ * after reset/reclaim. Real vm fops, current mm and status are checked below.
++ * gb_share_lock protects every field and serializes creation with teardown.
++ */
++static struct {
++	struct gh_vm *vm;
++	struct page **pages;
++	unsigned long npages;
++} gb_window_pin;
++
++static int gb_window_pin_create(struct gh_vm *vm, struct ghsm_pin_ram_window *p)
++{
++	struct page **pages;
++	unsigned long npages = p->memory_size >> PAGE_SHIFT;
++	u32 avail, served, held;
++	long pinned;
++	int ret;
++
++	if (gb_window_pin.vm)
++		return gb_window_pin.vm == vm ? -EALREADY : -EBUSY;
++	/* A matching explicit pool binding is mandatory; this is not an arbitrary
++	 * pin-any-process interface. Query never creates or changes a binding.
++	 */
++	ret = gb_gunyah_pool_control(vm, p->memory_size, true, &avail, &served, &held);
++	if (ret)
++		return ret;
++	ret = account_locked_vm(vm->mm, npages, true);
++	if (ret)
++		return ret;
++	pages = kvcalloc(npages, sizeof(*pages), GFP_KERNEL_ACCOUNT);
++	if (!pages) {
++		ret = -ENOMEM;
++		goto unaccount;
++	}
++	/* Same long-term writable GUP contract as the stock parcel allocator.
++	 * This performs no RM/SCM call and cannot start a guest.
++	 */
++	pinned = pin_user_pages_fast(p->userspace_addr, npages,
++				     FOLL_WRITE | FOLL_LONGTERM, pages);
++	if (pinned != npages) {
++		ret = pinned < 0 ? pinned : -EFAULT;
++		if (pinned > 0)
++			unpin_user_pages(pages, pinned);
++		kvfree(pages);
++		goto unaccount;
++	}
++	gb_window_pin.vm = vm;
++	gb_window_pin.pages = pages;
++	gb_window_pin.npages = npages;
++	p->pinned_pages = npages;
++	return 0;
++unaccount:
++	account_locked_vm(vm->mm, npages, false);
++	return ret;
++}
++
++void gb_runtime_window_release(struct gh_vm *vm)
++{
++	mutex_lock(&gb_share_lock);
++	if (gb_window_pin.vm == vm) {
++		unpin_user_pages(gb_window_pin.pages, gb_window_pin.npages);
++		account_locked_vm(vm->mm, gb_window_pin.npages, false);
++		kvfree(gb_window_pin.pages);
++		gb_window_pin.vm = NULL;
++		gb_window_pin.pages = NULL;
++		gb_window_pin.npages = 0;
++	}
++	mutex_unlock(&gb_share_lock);
++}
+ 
+ static struct gh_vm_mem *gb_share_find(struct gh_vm *vm, u32 label)
+ {
+@@ -215,6 +287,8 @@
+ 	struct ghsm_share_blob b;
+ 	struct ghsm_unshare_blob u;
+ 	struct ghsm_bind_ram_pool pool;
++	struct ghsm_pin_ram_window pin;
++	u64 end;
+ 	struct gh_vm *vm;
+ 	struct file *vm_file;
+ 	int fd, ret;
+@@ -236,6 +310,19 @@
+ 		     pool.memory_size != GHSM_POOL_WINDOW_2048))
+ 			return -EINVAL;
+ 		fd = pool.vm_fd;
++	} else if (cmd == GHSM_PIN_RAM_WINDOW) {
++		if (copy_from_user(&pin, user, sizeof(pin)))
++			return -EFAULT;
++		if (pin.flags || pin.reserved || pin.pinned_pages ||
++		    (pin.memory_size != GHSM_POOL_WINDOW_512 &&
++		     pin.memory_size != GHSM_POOL_WINDOW_2048) ||
++		    !PAGE_ALIGNED(pin.userspace_addr))
++			return -EINVAL;
++		if (check_add_overflow(pin.userspace_addr, pin.memory_size, &end))
++			return -EOVERFLOW;
++		if (!access_ok(u64_to_user_ptr(pin.userspace_addr), pin.memory_size))
++			return -EFAULT;
++		fd = pin.vm_fd;
+ 	} else {
+ 		return -ENOTTY;
+ 	}
+@@ -262,6 +349,11 @@
+ 				&pool.available_2m, &pool.served_2m, &pool.held_2m) : -EBUSY;
+ 		if (!ret && copy_to_user(user, &pool, sizeof(pool)))
+ 			ret = -EFAULT;
++	} else if (cmd == GHSM_PIN_RAM_WINDOW) {
++		ret = vm->vm_status == GH_RM_VM_STATUS_NO_STATE ?
++			gb_window_pin_create(vm, &pin) : -EBUSY;
++		if (!ret && copy_to_user(user, &pin, sizeof(pin)))
++			ret = -EFAULT;
+ 	} else {
+ 		ret = cmd == GHSM_SHARE_BLOB ? gb_share_create(vm, &b) : gb_share_reclaim(vm, u.label);
+ 	}
+--- a/drivers/virt/gunyah/gb-runtime-share.h
++++ b/drivers/virt/gunyah/gb-runtime-share.h
+@@ -42,6 +42,23 @@
+ };
+ #define GHSM_BIND_RAM_POOL _IOWR(0x47, 0x17, struct ghsm_bind_ram_pool)
+ 
++/* Pin one explicitly bound RAM window before VM start. No firmware operation
++ * or userspace unpin command: the real VM teardown owns this pin's lifetime.
++ * This replaces io_uring-only pinning in app-inherited seccomp contexts.
++ */
++struct ghsm_pin_ram_window {
++	__s32 vm_fd;
++	__u32 flags;
++	__u64 memory_size;
++	__u64 userspace_addr;
++	__u32 pinned_pages;
++	__u32 reserved;
++};
++#define GHSM_PIN_RAM_WINDOW _IOWR(0x47, 0x18, struct ghsm_pin_ram_window)
++
++struct gh_vm;
++void gb_runtime_window_release(struct gh_vm *vm);
++
+ #define GHSM_SHARE_BLOB _IOWR(0x47, 0x14, struct ghsm_share_blob)
+ #define GHSM_UNSHARE_BLOB _IOW(0x47, 0x15, struct ghsm_unshare_blob)
+ 
+--- a/drivers/virt/gunyah/vm_mgr.c
++++ b/drivers/virt/gunyah/vm_mgr.c
+@@ -19,6 +19,7 @@
+ #include <uapi/linux/gunyah.h>
+ 
+ #include "vm_mgr.h"
++#include "gb-runtime-share.h"
+ 
+ static void gh_vm_free(struct work_struct *work);
+ 
+@@ -767,6 +768,7 @@
+ 			dev_warn(ghvm->parent, "Failed to deallocate vmid: %d\n", ret);
+ 	}
+ 
++	gb_runtime_window_release(ghvm);
+ 	gb_gunyah_pool_vm_release(ghvm);
+ 	gh_rm_put(ghvm->rm);
+ 	mmdrop(ghvm->mm);

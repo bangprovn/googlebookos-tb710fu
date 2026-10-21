@@ -1,0 +1,99 @@
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -255,6 +255,35 @@
+ 
+ #endif /* ENABLE_GBM_ALLOCATION */
+ 
++static bool
++vkr_allocation_trace_allowed(void)
++{
++   const char *policy = getenv("GB_VENUS_ALLOCATION_DIAGNOSTICS_V1");
++   if (!policy || strcmp(policy, "1"))
++      return false;
++   static unsigned count;
++   unsigned seen = __atomic_load_n(&count, __ATOMIC_RELAXED);
++   while (seen < 16) {
++      if (__atomic_compare_exchange_n(&count, &seen, seen + 1, false,
++                                       __ATOMIC_RELAXED, __ATOMIC_RELAXED))
++         return true;
++   }
++   return false;
++}
++
++static void
++vkr_discard_allocation_backing(int import_fd, int udmabuf_fd, void *gbm_bo,
++                                struct vkr_mtl_shm *mtl_shm)
++{
++   if (import_fd >= 0)
++      close(import_fd);
++   if (udmabuf_fd >= 0 && udmabuf_fd != import_fd)
++      close(udmabuf_fd);
++   if (gbm_bo)
++      vkr_gbm_bo_destroy(gbm_bo);
++   vkr_mtl_shm_free(mtl_shm);
++}
++
+ static void
+ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
+                               struct vn_command_vkAllocateMemory *args)
+@@ -270,6 +299,10 @@
+       args->ret = VK_ERROR_UNKNOWN;
+       return;
+    }
++   const bool trace = vkr_allocation_trace_allowed();
++   if (trace)
++      vkr_log("GB-VENUS-ALLOC: stage=request bytes=%" PRIu64 " memory_type=%u",
++              alloc_info->allocationSize, mem_type_index);
+ 
+    /* translate VkImportMemoryResourceInfoMESA into VkImportMemoryFdInfoKHR in place */
+    VkImportMemoryFdInfoKHR local_import_info = { .fd = -1 };
+@@ -280,6 +313,8 @@
+       res_info = (VkImportMemoryResourceInfoMESA *)prev_of_res_info->pNext;
+       if (!vkr_get_fd_info_from_resource_info(ctx, res_info, &local_import_info)) {
+          args->ret = VK_ERROR_INVALID_EXTERNAL_HANDLE;
++         if (trace)
++            vkr_log("GB-VENUS-ALLOC: stage=resource_import result=%d", args->ret);
+          return;
+       }
+ 
+@@ -305,6 +340,11 @@
+     */
+    const uint32_t property_flags =
+       physical_dev->memory_properties.memoryTypes[mem_type_index].propertyFlags;
++   if (trace)
++      vkr_log("GB-VENUS-ALLOC: stage=allocator_selection flags=0x%x resource_import=%u "
++               "udmabuf=%u gbm=%u", property_flags, (unsigned)!!res_info,
++              (unsigned)(physical_dev->udmabuf_dev_fd >= 0),
++              (unsigned)!!physical_dev->gbm_device);
+    uint32_t valid_fd_types = 0;
+    int udmabuf_fd = -1;
+    void *gbm_bo = NULL;
+@@ -399,8 +439,11 @@
+             args->ret = vkr_gbm_get_fd_info_from_allocation_info(
+                physical_dev, alloc_info, &gbm_bo, &local_import_info);
+          }
+-         if (args->ret != VK_SUCCESS)
++         if (args->ret != VK_SUCCESS) {
++            if (trace)
++               vkr_log("GB-VENUS-ALLOC: stage=external_allocator result=%d", args->ret);
+             return;
++         }
+ 
+          alloc_info->pNext = &local_import_info;
+          valid_fd_types = 1 << VIRGL_RESOURCE_FD_DMABUF;
+@@ -415,12 +458,10 @@
+    }
+ 
+    struct vkr_device_memory *mem = vkr_device_memory_create_and_add(ctx, args);
++   if (trace)
++      vkr_log("GB-VENUS-ALLOC: stage=memory_object_create result=%d", args->ret);
+    if (!mem) {
+-      if (local_import_info.fd >= 0)
+-         close(local_import_info.fd);
+-      if (gbm_bo)
+-         vkr_gbm_bo_destroy(gbm_bo);
+-      vkr_mtl_shm_free(mtl_shm);
++      vkr_discard_allocation_backing(local_import_info.fd, udmabuf_fd, gbm_bo, mtl_shm);
+       return;
+    }
+ 

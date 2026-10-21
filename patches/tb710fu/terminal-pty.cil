@@ -1,0 +1,16 @@
+; Owner development Terminal console. Equivalent to the AOSP create_pty
+; contract omitted from this donor's user-build vmlauncher_app policy.
+; Preserve an isolated PTY label, narrow ioctl set and TIOCSTI prohibition.
+(type vmlauncher_app_devpts)
+(roletype object_r vmlauncher_app_devpts)
+(typeattributeset fs_type (vmlauncher_app_devpts))
+(typetransition vmlauncher_app devpts chr_file vmlauncher_app_devpts)
+(allow vmlauncher_app vmlauncher_app_devpts (chr_file (open getattr read write ioctl setattr)))
+(allowx vmlauncher_app vmlauncher_app_devpts (ioctl chr_file ((range 0x5401 0x5404) 0x540b (range 0x540e 0x5411) (range 0x5413 0x5414) (range 0x5450 0x5451))))
+; Only the original app's confined manager/VMM consume its passed console FDs.
+; They cannot open another app's PTY by pathname through these rules.
+(allow priv_app_all_virtualizationmanager vmlauncher_app_devpts (chr_file (getattr read write ioctl)))
+(allow priv_app_all_virtmgr_crosvm vmlauncher_app_devpts (chr_file (getattr read write ioctl)))
+(allowx priv_app_all_virtualizationmanager vmlauncher_app_devpts (ioctl chr_file ((range 0x5401 0x5404) 0x540b (range 0x540e 0x5411) (range 0x5413 0x5414) (range 0x5450 0x5451))))
+(allowx priv_app_all_virtmgr_crosvm vmlauncher_app_devpts (ioctl chr_file ((range 0x5401 0x5404) 0x540b (range 0x540e 0x5411) (range 0x5413 0x5414) (range 0x5450 0x5451))))
+(neverallowx domain vmlauncher_app_devpts (ioctl chr_file (0x5412)))

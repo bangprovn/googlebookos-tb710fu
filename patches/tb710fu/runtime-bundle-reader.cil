@@ -1,0 +1,10 @@
+; The fixed immutable mount worker hashes these additional retained helpers.
+; Read-only access only; no execution or device access is granted.
+(allow dexopt_chroot_setup crosvm_vu_fs_exec (file (read getattr open)))
+(allow dexopt_chroot_setup crosvm_vu_snd_exec (file (read getattr open)))
+(allow dexopt_chroot_setup early_virtmgr_exec (file (read getattr open)))
+(allow dexopt_chroot_setup fd_server_exec (file (read getattr open)))
+(allow dexopt_chroot_setup vfio_handler_exec (file (read getattr open)))
+(allow dexopt_chroot_setup virtualizationmanager_exec (file (read getattr open)))
+(allow dexopt_chroot_setup virtualizationservice_exec (file (read getattr open)))
+(allow dexopt_chroot_setup vmnic_exec (file (read getattr open)))

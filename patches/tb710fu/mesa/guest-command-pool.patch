@@ -1,0 +1,44 @@
+--- a/src/virtio/vulkan/vn_instance.c
++++ b/src/virtio/vulkan/vn_instance.c
+@@ -9,6 +9,9 @@
+  */
+ 
+ #include "vn_instance.h"
++
++#include <stdlib.h>
++#include <string.h>
+ 
+ #include "util/driconf.h"
+ #include "venus-protocol/vn_protocol_driver_info.h"
+@@ -70,6 +73,17 @@
+    /* clang-format on */
+ };
+ 
++static size_t
++vn_command_shmem_pool_min_size(void)
++{
++   /* Target-profile opt-in. Preserve stock behavior outside that profile;
++    * larger command streams still grow normally rather than being truncated.
++    * Smaller parcels do not relax the host's byte/span or RM accept guards.
++    */
++   const char *policy = getenv("GB_VENUS_COMMAND_POOL_V1");
++   return policy && !strcmp(policy, "1m") ? (1u << 20) : (8u << 20);
++}
++
+ static VkResult
+ vn_instance_init_renderer_versions(struct vn_instance *instance)
+ {
+@@ -311,8 +325,12 @@
+ 
+    vn_cs_renderer_protocol_info_init(instance);
+ 
++   const size_t command_pool_min_size = vn_command_shmem_pool_min_size();
++   if (VN_DEBUG(INIT) && command_pool_min_size != (8u << 20))
++      vn_log(NULL, "GB-VENUS-COMMAND-POOL: minimum_bytes=%zu",
++             command_pool_min_size);
+    vn_renderer_shmem_pool_init(instance->renderer, &instance->cs_shmem_pool,
+-                               8u << 20);
++                               command_pool_min_size);
+ 
+    vn_renderer_shmem_pool_init(instance->renderer,
+                                &instance->reply_shmem_pool, 1u << 20);

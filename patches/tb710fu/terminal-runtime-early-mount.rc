@@ -1,0 +1,16 @@
+# Exact pinned bundle is checked by the fixed worker before mounting. This
+# synchronous action completes after APEX activation and before zygote-start.
+on post-fs-data
+    # Permit THP only for mappings explicitly advised by the VMM; no reservation
+    # or forced huge pages for unrelated ordinary shmem mappings.
+    write /sys/kernel/mm/transparent_hugepage/shmem_enabled advise
+    write /sys/kernel/mm/transparent_hugepage/defrag madvise
+    exec_start gb-terminal-runtime-boot
+
+service gb-terminal-runtime-boot /system_ext/bin/gb-terminal-mount enable-terminal
+    user root
+    group root
+    capabilities SYS_ADMIN
+    disabled
+    oneshot
+    timeout_period 15

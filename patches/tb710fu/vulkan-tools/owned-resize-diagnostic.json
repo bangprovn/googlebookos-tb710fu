@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "source_version": "Vulkan-Tools v1.4.304",
+  "source": "https://github.com/KhronosGroup/Vulkan-Tools/blob/v1.4.304/cube/cube.c",
+  "files": [
+    {
+      "path": "cube.c",
+      "sha256": "eed535eb530cc48880080ad39c17d0e7842dd3a9536681c6a8d10706b1a4fd29",
+      "result_sha256": "cee019fe0c61895bebc813ecca4a164ac51f5bfd255fbbe31128dffe86fee640"
+    }
+  ],
+  "patch_sha256": "e6ed27776eeb3fecef2abf2c1f5f5672cf880c716f4eec2d57dae7563bd22ce9",
+  "scope": "Process-only owned Wayland maximize/unmaximize diagnostic through upstream vkcube resize and oldSwapchain paths",
+  "opt_in": {
+    "GB_VKCUBE_OWNED_RESIZE_V1": "owned-maximize-v1"
+  },
+  "required_environment": [
+    "GB_OWNED_COMPOSITOR_PID",
+    "WAYLAND_DISPLAY (wayland-0, wayland-1 or wayland-2)"
+  ],
+  "required_arguments": [
+    "--wsi",
+    "wayland",
+    "--width",
+    "640",
+    "--height",
+    "480",
+    "--c",
+    "2200..2400"
+  ],
+  "request_frames": {
+    "maximize": 400,
+    "unmaximize": 1400
+  },
+  "verification_deadline_frames": {
+    "maximize": 800,
+    "restore": 1800
+  },
+  "alarm_seconds": 90,
+  "maximum_width": 3200,
+  "maximum_height": 2000,
+  "maximum_rgba_pixel_bytes_per_image": 33554432,
+  "maximum_images_per_swapchain": 4,
+  "maximum_configure_states": 64,
+  "maximum_configure_events": 64,
+  "maximum_old_swapchain_recreations": 16,
+  "notes": [
+    "Pixel byte bound excludes stride padding, depth, textures, driver objects and all allocation overhead; existing Android bridge independently checks actual source and destination allocation sizes.",
+    "Compositor may refuse maximization or choose extents; require actual configure state, changed extent and oldSwapchain creation before reporting observed recreation.",
+    "No wl_seat binding in opt-in mode; compositor socket peer UID/PID is checked before registry binding.",
+    "Uses upstream existing presentation/retirement behavior; does not qualify explicit presentation-engine retirement or maintenance1 fences.",
+    "Actual swapchain image count is checked after creation; minImageCount requests cannot impose an allocation ceiling on a Vulkan implementation. Refuse counts above four before application image-view/framebuffer allocations.",
+    "No source checkout edits or firmware changes; stage the pinned patch on a copy.",
+    "Six sample markers follow demo_draw and frame advancement without child waits; host observations must separately prove animation within each configured size."
+  ],
+  "license": "Apache-2.0; original Khronos, Valve, LunarG copyright and license notices retained",
+  "build_verified": true,
+  "host_helper_tests_verified": true,
+  "device_runtime_verified": true,
+  "presentation_verified": true,
+  "full_port_verified": false,
+  "host_helper_test_command": "python3 tests/vulkan_cube_resize_patch.py",
+  "host_helper_tests": 2,
+  "sample_frames": [
+    {
+      "sample_index": 0,
+      "frame": 100,
+      "phase": 0
+    },
+    {
+      "sample_index": 1,
+      "frame": 250,
+      "phase": 0
+    },
+    {
+      "sample_index": 2,
+      "frame": 900,
+      "phase": 1
+    },
+    {
+      "sample_index": 3,
+      "frame": 1150,
+      "phase": 1
+    },
+    {
+      "sample_index": 4,
+      "frame": 1900,
+      "phase": 2
+    },
+    {
+      "sample_index": 5,
+      "frame": 2150,
+      "phase": 2
+    }
+  ],
+  "maximum_sample_records": 6,
+  "sample_markers_are_presentation_proof": false,
+  "presentation_scope": "Six sampled images show native cube rotation before, during and after one controlled maximize/restore cycle with the qualified feedback candidate; individual physical frames were not all observed",
+  "candidate_binary_sha256": "b29fd1b9ee3d2652867e94e45c6db1adabd372cba77d9ec2b277e7756bf9cc63",
+  "runtime_evidence": "../../../docs/tb710fu-native-resize-20261020.json"
+}

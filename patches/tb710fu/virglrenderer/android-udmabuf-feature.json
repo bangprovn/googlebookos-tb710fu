@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "path": "artifacts/source/crosvm-android16qpr2-backend/external/virglrenderer/prebuilt-intermediates/config.h",
+  "sha256": "08571c14812592270da36b9b474ad6182c55bab244e7f14094406be15d877af1",
+  "result_sha256": "78e56142133d8ae352574623fea78b840cd8a3a7fef2d7519167c7de1f768ff6",
+  "patch_sha256": "6a3126d975a2d84729f31fd45d71ee18d7a248351d7f08a102185c854fe5c15f",
+  "revision": "718f00f8b0483112f804925cf51576a8cade8046",
+  "license": "MIT per upstream project notices",
+  "scope": "Compile existing UDMABUF allocator for Android Linux only when its UAPI header exists; runtime device/policy checks remain",
+  "runtime_verified": true,
+  "installed": true,
+  "runtime_scope": "4 KiB native allocation, binding, CPU mapping and runtime DMA-BUF sharing only",
+  "gpu_work_verified": false,
+  "runtime_report": "docs/tb710fu-venus-udmabuf-20261020.json"
+}

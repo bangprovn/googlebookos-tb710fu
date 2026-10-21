@@ -1,0 +1,19 @@
+--- a/aarch64/src/lib.rs
++++ b/aarch64/src/lib.rs
+@@ -865,10 +865,13 @@
+             }
+             None => (AARCH64_PCI_CAM_BASE_DEFAULT, AARCH64_PCI_CAM_SIZE_DEFAULT),
+         };
+-        // TODO: Make the PCI slot allocator aware of the CAM size so we can remove this check.
+-        if pci_cam_size != AARCH64_PCI_CAM_SIZE_DEFAULT {
++        // Android 17 AVF reserves a 16 MiB ECAM window for its existing bus 0.
++        // Preserve that requested reservation as well as the older 1 MiB default.
++        // This does not change the 12-bit register stride, bus-0 allocator/FDT,
++        // address, overflow, RAM or reserved-window validation below.
++        if ![AARCH64_PCI_CAM_SIZE_DEFAULT, 0x1000000].contains(&pci_cam_size) {
+             return Err(Error::ConfigurePciCam(format!(
+-                "PCI CAM size must be {AARCH64_PCI_CAM_SIZE_DEFAULT:#x}, got {pci_cam_size:#x}"
++                "PCI CAM size must be 0x100000 or 0x1000000, got {pci_cam_size:#x}"
+             )));
+         }
+         let pci_cam = AddressRange::from_start_and_size(pci_cam_start, pci_cam_size).ok_or(

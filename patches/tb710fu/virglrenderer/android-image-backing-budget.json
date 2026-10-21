@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "revision": 1,
+  "base_patch": "android-image-state-diagnostics.json",
+  "files": [
+    {
+      "path": "src/gb_android_image_bridge.h",
+      "base_path": "artifacts/device/first-boot-20261013/guest-native-state-diag-20261020-v1/renderer-build-v1/source-overrides/src/gb_android_image_bridge.h",
+      "sha256": "1fcb5f65f83bb3fee6f10fe9d17ae0f2ee5afe2794a5a51887b87fd4a8a886d9",
+      "result_sha256": "0fabe5003937b6f0da1707d6f621dcb53235a51807b234ce0c81406d7d442e3f"
+    },
+    {
+      "path": "src/vrend_renderer.c",
+      "base_path": "artifacts/device/first-boot-20261013/guest-native-state-diag-20261020-v1/renderer-build-v1/source-overrides/src/vrend_renderer.c",
+      "sha256": "6ce1cff7da33fb0f7a07b51ebd169ad8910758eef1a1301b2ca6f7e191236029",
+      "result_sha256": "6ce1cff7da33fb0f7a07b51ebd169ad8910758eef1a1301b2ca6f7e191236029",
+      "unchanged": true
+    }
+  ],
+  "patch_sha256": "9dc3a933e34d38e61e3f1caca6a92cde0c18501fca31ed8303045bdbfde8ae07",
+  "scope": "D92 private bridge admission for up to 16 bounded images under the unchanged 512 MiB accounted source-plus-destination ceiling; retain D92 failure diagnostics and lifecycle policy",
+  "activation": "Existing GB_ANDROID_IMAGE_BRIDGE_V1=diagnostic-linear-v1",
+  "maximum_live_or_reserved_or_quarantined_images": 16,
+  "previous_image_limit": 8,
+  "source_destination_per_image_limit_bytes": 33554432,
+  "aggregate_accounted_backing_limit_bytes": 536870912,
+  "previous_accounted_backing_upper_bound_bytes": 536870912,
+  "initial_reservation": "Full validated source DMA-BUF length plus 32 MiB unknown destination allowance, before C object, Vulkan, or AHB allocation/import. Existing classification ioctl and input validation have already completed.",
+  "settled_charge": "Full source DMA-BUF length plus validated AndroidHardwareBufferProperties allocationSize; source VkMemoryRequirements alone is not the charge",
+  "charge_lifetime": "Reserve slot and bytes together under mutex; shrink only after AHB size validation; retain through constructor failures, native teardown, and pending quarantine; release after native cleanup and C object free. No reaper.",
+  "thread_scope": "Only accounting helpers are mutex-protected. The existing GL-owner/reference contract still serializes active create/refresh/destruction. No driver, FD, log, or wait call occurs under the accounting mutex. Concurrent helper tests do not make the active bridge API thread-safe.",
+  "implicit_modifiers_accepted": false,
+  "per_image_layout_guards_changed": false,
+  "kernel_quotas_changed": false,
+  "reaper_added": false,
+  "failure_record_caps_unchanged": {
+    "header": 32,
+    "renderer": 16
+  },
+  "limitations": [
+    "512MiB bounds charged accepted source/destination backing, not total process/GPU RAM or driver/instance/device/command/object overhead.",
+    "Sixteen image objects can increase driver overhead and direct or driver-owned FD counts; duplication/import/close ownership and fixed finite image count remain.",
+    "AHBsize is learned after allocation. An oversized rejected AHB can transiently exceed its provisional allowance before cleanup; this pre-existing post-allocation validation cannot establish an absolute transient physical-memory cap.",
+    "Unknown destination reservations may cause a safe refusal even if eventual small sizes would fit; admission never overcommits future shrink.",
+    "Pending D92 quarantine retains charges until process exit; no deferred pointer retry or reclamation is introduced.",
+    "Partial construction reservations are charged; counter snapshots across diagnostic counters remain observational.",
+    "This capacity change does not repair known asynchronous import failures or compositor poisoning after an over-limit import; graceful client-local refusal and compositor recovery remain unimplemented."
+  ],
+  "license": "MIT; original source notices retained",
+  "host_mock_verified": true,
+  "build_verified": true,
+  "installed": true,
+  "runtime_verified": true,
+  "presentation_verified": true,
+  "full_port_verified": false,
+  "host_inputs": {
+    "tests/android_image_backing_budget.py": "b2aba550aa978d34176f539be59df5ab535c4d6f889af58c22e88c1bc41480ff",
+    "tests/fixtures/android_image_backing_budget_mock.c": "00f1e9f268bed6714f9285f82f249f48b759cdca2c36123046c8348fa8e85ff7",
+    "tests/fixtures/android_image_bridge_mock.c": "dccaf525b89011360e8169eef00baea4e39b8217f3324808cb47a02b3d0020d5",
+    "artifacts/source/crosvm-android16qpr2-backend/external/virglrenderer/src/gb_vulkan_android.h": "298808a42c18f61a43d9c74beb91815c52f1808b41e4881c0a448f32ff6aa5cc"
+  },
+  "host_validation": {
+    "command": "PYTHONDONTWRITEBYTECODE=1 python3 tests/android_image_backing_budget.py -v",
+    "tests_passed": 10,
+    "mock_subprocess_scenarios": 18,
+    "concurrent_helper_cohorts": 2,
+    "sanitizers": [
+      "AddressSanitizer",
+      "UndefinedBehaviorSanitizer"
+    ],
+    "exact_apply_reverse_reapply": true,
+    "scope": "Actual patched bridge creation, budget helpers and teardown with native/GPU stand-ins plus real owned descriptors. Sixteen small imports, eight maximum backing pairs, source FD versus smaller VkMemoryRequirements, ten constructor rollback faults, teardown lock/charge probes, quarantined maximum backing refusal, independent 32-record failure cap, and mutex-ledger contention. No real GPU lifecycle, physical RAM bound, image build or runtime qualification.",
+    "intentional_quarantine": "Fixture retains LeakSanitizer roots only; it does not read, retry or reclaim bridge pointers after ownership transfer to quarantine. Retained FD and charged bytes are asserted; this is not a reclamation or leak-free claim.",
+    "mock_staging": "The pinned existing bridge fixture remains immutable; only a temporary copy receives allocation-size/fault and cleanup-boundary probes. The actual production header is applied without helper replacements.",
+    "source_inputs_unchanged": true,
+    "regressions": {
+      "tests/android_image_swapchain_budget.py": 1,
+      "tests/android_image_bridge.py": 4
+    }
+  },
+  "candidate_renderer_sha256": "72956f78e7f609041d52ad2a3e1db4606ddf83127198a79787c78b1e05a88c72",
+  "candidate_renderer_bytes": 3177152,
+  "build_seconds": 58.77,
+  "elf_dynamic_abi_matches_d92": true,
+  "dynamic_symbol_abi_entries": 4508,
+  "new_undefined_symbol_abi": [],
+  "build_provenance": "artifacts/device/first-boot-20261013/guest-native-backing-budget-20261020-v1/renderer-build-v1/provenance.json",
+  "build_scope": "Offline renderer ELF and ABI build proof; installation and bounded physical presentation are separately qualified by the linked runtime reports.",
+  "runtime_scope": "Two pinned 640x480 native Vulkan windows animate concurrently; a third client presents after their normal exits in the same private compositor session.",
+  "runtime_report": "docs/tb710fu-native-multiwindow-repair-20261020.json",
+  "installation_report": "docs/tb710fu-backing-budget-20261020.json",
+  "actual_runtime_peak_images": null,
+  "actual_runtime_peak_accounted_backing_bytes": null,
+  "graceful_over_limit_recovery_verified": false,
+  "runtime_qualification": {
+    "path": "artifacts/device/first-boot-20261013/guest-native-backing-budget-20261020-v1/native-two-window-v1/qualification.json",
+    "sha256": "68f9fa2f6d0c36b71d1593345b24107c27263f010f25487d409f13fba92a8428",
+    "bytes": 30495
+  },
+  "additional_runtime_reports": [
+    {
+      "path": "docs/tb710fu-d93-native-resize-20261020.json",
+      "sha256": "e56f36d53a902de4adb84ffa2209280133dc0c7860352601504258ba811de49a",
+      "bytes": 63611
+    }
+  ],
+  "additional_runtime_scope": "Three sequential private no-map resize clients on the same D93 renderer; normal healthy path only, not graceful over-limit recovery or peak-capacity measurement."
+}

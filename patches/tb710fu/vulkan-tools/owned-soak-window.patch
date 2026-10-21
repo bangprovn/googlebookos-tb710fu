@@ -1,0 +1,54 @@
+--- a/cube.c
++++ b/cube.c
+@@ -422,0 +423,5 @@
++/* Separate long-running owner diagnostic; old fixed/resize budgets stay intact. */
++static bool gb_owned_soak_enabled(void) {
++    const char *selection = getenv("GB_VKCUBE_OWNED_SOAK_V1");
++    return selection && !strcmp(selection, "owned-soak-v1");
++}
+@@ -424 +429,4 @@
+-    return gb_owned_resize_enabled() || gb_owned_fixed_enabled();
++    return gb_owned_resize_enabled() || gb_owned_fixed_enabled() || gb_owned_soak_enabled();
++}
++static unsigned gb_owned_window_alarm_seconds(void) {
++    return gb_owned_soak_enabled() ? 660u : 90u;
+@@ -431 +439 @@
+-    return gb_owned_fixed_enabled() ? width == 640 && height == 480 : gb_owned_resize_extent(width, height);
++    return (gb_owned_fixed_enabled() || gb_owned_soak_enabled()) ? width == 640 && height == 480 : gb_owned_resize_extent(width, height);
+@@ -434 +442 @@
+-    if (gb_owned_resize_enabled() && gb_owned_fixed_enabled()) return false;
++    if ((unsigned)gb_owned_resize_enabled() + (unsigned)gb_owned_fixed_enabled() + (unsigned)gb_owned_soak_enabled() > 1u) return false;
+@@ -435,0 +444 @@
++    if (gb_owned_soak_enabled()) return frames == 1000000;
+@@ -500 +509 @@
+-    printf("%s:{\"schema_version\":1,\"status\":\"refused\",\"stage\":\"%s\",\"presentation_verified\":false}\n", gb_owned_fixed_enabled() ? "GB_OWNED_FIXED" : "GB_OWNED_RESIZE", stage);
++    printf("%s:{\"schema_version\":1,\"status\":\"refused\",\"stage\":\"%s\",\"presentation_verified\":false}\n", gb_owned_soak_enabled() ? "GB_OWNED_SOAK" : gb_owned_fixed_enabled() ? "GB_OWNED_FIXED" : "GB_OWNED_RESIZE", stage);
+@@ -668 +677 @@
+-    if (!gb_owned_fixed_enabled() || result == 0) return;
++    if ((!gb_owned_fixed_enabled() && !gb_owned_soak_enabled()) || result == 0) return;
+@@ -672 +681 @@
+-    fprintf(stderr, "GB_OWNED_FIXED_API_ERROR:{\"schema_version\":1,\"api\":\"%s\",\"vk_result\":%" PRId32
++    fprintf(stderr, "%s:{\"schema_version\":1,\"api\":\"%s\",\"vk_result\":%" PRId32
+@@ -676,0 +686 @@
++            gb_owned_soak_enabled() ? "GB_OWNED_SOAK_API_ERROR" : "GB_OWNED_FIXED_API_ERROR",
+@@ -1648 +1658 @@
+-               gb_owned_fixed_enabled() ? "GB_OWNED_FIXED_CREATE" : "GB_OWNED_RESIZE_CREATE",
++               gb_owned_soak_enabled() ? "GB_OWNED_SOAK_CREATE" : gb_owned_fixed_enabled() ? "GB_OWNED_FIXED_CREATE" : "GB_OWNED_RESIZE_CREATE",
+@@ -3174,0 +3185,4 @@
++    /* A soak is qualified only by the owner controller's timed SIGINT. The
++     * finite frame cap, a compositor close, or another normal loop exit must
++     * never become a successful early soak completion. No signal override. */
++    if (gb_owned_soak_enabled()) gb_owned_resize_refuse("soak_requires_planned_owner_stop");
+@@ -3203 +3217 @@
+-        bool configured = gb_owned_fixed_enabled()
++        bool configured = gb_owned_fixed_enabled() || gb_owned_soak_enabled()
+@@ -3210 +3224 @@
+-               gb_owned_fixed_enabled() ? "GB_OWNED_FIXED_CONFIGURE" : "GB_OWNED_RESIZE_CONFIGURE",
++               gb_owned_soak_enabled() ? "GB_OWNED_SOAK_CONFIGURE" : gb_owned_fixed_enabled() ? "GB_OWNED_FIXED_CONFIGURE" : "GB_OWNED_RESIZE_CONFIGURE",
+@@ -5068 +5082,5 @@
+-        alarm(90);
++        alarm(gb_owned_window_alarm_seconds());
++        if (gb_owned_soak_enabled()) {
++            puts("GB_OWNED_SOAK_LIMITS:{\"schema_version\":1,\"width\":640,\"height\":480,\"frame_limit\":1000000,\"alarm_seconds\":660,\"planned_owner_stop_required\":true,\"presentation_verified\":false}");
++            fflush(stdout);
++        }

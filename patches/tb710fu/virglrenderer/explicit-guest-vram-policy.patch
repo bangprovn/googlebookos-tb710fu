@@ -1,0 +1,36 @@
+--- a/src/venus/vkr_renderer.c
++++ b/src/venus/vkr_renderer.c
+@@ -24,6 +24,21 @@
+ vkr_get_capset(void *capset, uint32_t flags)
+ {
+    struct virgl_renderer_capset_venus *c = capset;
++   bool guest_vram = (bool)(flags & VIRGL_RENDERER_USE_GUEST_VRAM);
++   const char *policy = getenv("GB_VENUS_GUEST_VRAM_V1");
++   if (policy) {
++      if (!strcmp(policy, "host")) {
++         /* The stock Android guest kernel accepts runtime host mappings but
++          * does not implement the dedicated guest-heap allocation protocol.
++          */
++         guest_vram = false;
++      } else if (strcmp(policy, "guest") || !guest_vram) {
++         if (c)
++            memset(c, 0, sizeof(*c));
++         vkr_log("GB-VENUS-CAPS: invalid_guest_vram_policy=true");
++         return 0;
++      }
++   }
+    if (c) {
+       memset(c, 0, sizeof(*c));
+       c->wire_format_version = vn_info_wire_format_version();
+@@ -51,7 +66,10 @@
+       c->allow_vk_wait_syncs = 1;
+       c->supports_multiple_timelines = 1;
+ 
+-      c->use_guest_vram = (bool)(flags & VIRGL_RENDERER_USE_GUEST_VRAM);
++      c->use_guest_vram = guest_vram;
++      if (policy)
++         vkr_log("GB-VENUS-CAPS: explicit_policy=true guest_vram=%s",
++                 guest_vram ? "true" : "false");
+    }
+ 
+    return sizeof(*c);

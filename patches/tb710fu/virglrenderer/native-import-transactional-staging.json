@@ -1,0 +1,133 @@
+{
+  "schema_version": 1,
+  "revision": 2,
+  "scope": "Process-opt-in host lookup retention with conservative failed-native guard; no ACK or graceful-refusal implementation",
+  "files": [
+    {
+      "path": "src/vrend_renderer.c",
+      "base_path": "artifacts/device/first-boot-20261013/guest-native-state-diag-20261020-v1/renderer-build-v1/source-overrides/src/vrend_renderer.c",
+      "sha256": "6ce1cff7da33fb0f7a07b51ebd169ad8910758eef1a1301b2ca6f7e191236029",
+      "result_sha256": "396d8d4a3c96186f9f42cc69703b3596bc111599d2bb47f2a3146e11bda0aca6"
+    },
+    {
+      "path": "src/virgl_resource.h",
+      "base_path": "artifacts/source/crosvm-android16qpr2-backend/external/virglrenderer/src/virgl_resource.h",
+      "sha256": "6723ee73f20c99d239e7a9f97d261791b904af79ca8c240fc7ab996926d255bf",
+      "result_sha256": "8dc28321faf4f13c8f360f0df082bc4264fa2b62665758f1116679e89bc36f10"
+    }
+  ],
+  "patch_sha256": "59db916cd329f9b5caa3d7a15b134b843a6eb333b22c476769f4ff0c93fa7ff2",
+  "opt_in": {
+    "GB_NATIVE_IMPORT_TXN_V1": "retain-untyped-v1"
+  },
+  "support_inputs": {
+    "artifacts/source/crosvm-android16qpr2-backend/external/virglrenderer/src/virgl_resource.c": "c62c2bf7f0e083068b6d4236fe98236d2a7851a27ff58799bf200e844f7e434c",
+    "artifacts/source/crosvm-android16qpr2-backend/external/virglrenderer/src/vrend_object.c": "f24726ad0353d70385c2660d5deeac92297bd66ae5bfe7aa89837d6e421f2205",
+    "artifacts/source/crosvm-android16qpr2-backend/external/virglrenderer/src/vrend_decode.c": "69da576fc7cfa52bbc99d7a61dc89188474b5ee2d76886f1cc7fc6cf1a7b5d29",
+    "artifacts/source/crosvm-android16qpr2-backend/external/virglrenderer/src/vrend_winsys_egl.c": "1e4bcde3bfb7951e34a0f0299bb145e1ecd0c7342198114ad6a9ff01b781d6e6",
+    "artifacts/source/crosvm-android16qpr2-backend/external/virglrenderer/src/vrend_winsys_egl.h": "296fa8ea4d2f8d7ccefefe358c8d03dcd88bae2cced59d571916b28b0b28877f",
+    "artifacts/device/first-boot-20261013/guest-native-backing-budget-20261020-v1/renderer-build-v1/source-overrides/src/gb_android_image_bridge.h": "0fabe5003937b6f0da1707d6f621dcb53235a51807b234ce0c81406d7d442e3f",
+    "artifacts/source/crosvm-android16qpr2-backend/external/virglrenderer/src/virglrenderer.c": "2fb7d1829b3cd67e799cca46807537eae7b9a64f8db0456b40d3b5b8280645b2"
+  },
+  "host_validation": {
+    "state": "passed",
+    "command": "PYTHONDONTWRITEBYTECODE=1 python3 tests/native_import_transactional_staging.py -v",
+    "python_tests_passed": 3,
+    "candidate_scenarios": 36,
+    "baseline_expected_failures": 2,
+    "sanitizers": [
+      "AddressSanitizer",
+      "UndefinedBehaviorSanitizer"
+    ],
+    "warnings_denied": true,
+    "exact_apply_reverse_reapply": true,
+    "source_inputs_unchanged": true,
+    "actual_functions": [
+      "vrend_renderer_pipe_resource_set_type",
+      "vrend_renderer_detach_res_ctx",
+      "virgl_resource_create",
+      "virgl_resource_destroy_func",
+      "virgl_resource_create_from_pipe",
+      "virgl_resource_create_from_fd",
+      "virgl_resource_create_from_opaque_handle"
+    ],
+    "actual_header": "src/virgl_resource.h candidate",
+    "baseline_header_caveat": "Baseline import/detach bodies compile with candidate append-only marker field solely for common fixture inspection; regression fails on original lookup loss before marker logic.",
+    "scenarios": [
+      "Cache/list success and already-typed duplicate/changed-argument call retaining original authoritative type",
+      "Ordinary DMA-BUF success control",
+      "Pre-native constructor and format refusal",
+      "Opaque native refusal, no repeated driver call, token-disable cannot bypass guard",
+      "Hidden pending NULL duplicate survives original teardown",
+      "Texture-import failure cleanup with retired or retained native duplicate",
+      "Hash insertion refusal rejects same/changed metadata retries and retains completed pipe until teardown",
+      "Cross-context promotion then stale untyped detach, and promoted-resource registration failure rejects retries",
+      "Duplicate nonowning attachments cleanup",
+      "Invalid FD type, unsupported format, missing resource and invalid plane count",
+      "Opt-out legacy consume-before-import control",
+      "Real original FD close once plus reused-FD sentinel survives destructor",
+      "Actual public pipe, FD and opaque factories initialize marker to zero"
+    ],
+    "quarantine_scope": "Mock quarantine roots/FDs are retained until subprocess exit; no raw pointer retry/reclamation. Actual D93 bridge source is hash-pinned and unchanged, not exercised against a real GPU."
+  },
+  "build_verified": false,
+  "installed": false,
+  "runtime_verified": false,
+  "graceful_refusal_implemented": false,
+  "full_port_verified": false,
+  "state": "candidate_unbuilt_uninstalled",
+  "base_host_renderer_sha256": "72956f78e7f609041d52ad2a3e1db4606ddf83127198a79787c78b1e05a88c72",
+  "host_mock_verified": true,
+  "acknowledgement_implemented": false,
+  "implicit_formats_relaxed": false,
+  "quota_changed": false,
+  "reaper_added": false,
+  "default_import_activation_changed": false,
+  "behavior": {
+    "untyped_lookup": "With exact token, retain original cache/list record until successful context registration. It is nonowning; global virgl_resource continues owning original FD or completed pipe_resource.",
+    "pre_native_failure": "Constructor/format/FD validation can return with original ownership and no native attempt. Existing decoder errors are unchanged; direct function test retries do not qualify operational retries through the decoder.",
+    "opaque_native_failure": "Set resource guard before either bridge or ordinary EGL import. Every failure after entry, including indistinguishable preallocation NULL, keeps guard; further staged requests cannot invoke native import. Guard is checked even with opt-in subsequently disabled.",
+    "context_hash_failure": "Keep or set guard after every failed opt-in hash registration, including an already-promoted shared pipe. Original FD is closed/invalidated on native promotion; global pipe_resource remains owned until teardown. Retained untyped lookups cannot enable later registration-only retries with either original or changed metadata.",
+    "successful_commit": "Verify context hash lookup equals completed pipe before removing retained entry and clearing guard. Existing already-typed calls return success without reimport or accepting/changing new metadata; this preserves legacy authoritative-type attachment semantics and is not immutable transaction acknowledgement.",
+    "detach": "Remove all matching nonowning cache/list records regardless of shared pipe state, including another context promotion and duplicate attachments; remove typed hash entry when present. This cleanup correction also applies with opt-in disabled.",
+    "legacy": "Without exact token and absent an earlier marked resource, original consume-before-import behavior remains. No new native retry, errno rewriting, dummy resource, context-error clearing, waits or native cleanup calls."
+  },
+  "initialization_proof": {
+    "base_constructor": "virgl_resource_create uses calloc(1,sizeof(*res)); marker starts zero",
+    "public_factories": [
+      "virgl_resource_create_from_pipe",
+      "virgl_resource_create_from_fd",
+      "virgl_resource_create_from_opaque_handle"
+    ],
+    "factory_routing_source_checked": true,
+    "actual_base_constructor_in_host_tests": true,
+    "header_change": "Append uint8_t vrend_native_import_blocked after existing fields; existing fields not reordered",
+    "build_requirement": "All renderer translation units/consumers of internal virgl_resource layout need a matched rebuild against this header. Internal ABI/build compatibility is not established by helper tests.",
+    "actual_public_factories_executed": true,
+    "factory_test_scope": "All three actual public factory bodies compile against the actual patched header and execute in host tests; zero-initialized marker is asserted. FD factory also supplies every standard scenario resource."
+  },
+  "ownership_proof": {
+    "failure_original_fd": "Unchanged set_type failure branches neither close nor transfer original resource FD. Actual global destructor still closes valid FD exactly once after context detach.",
+    "pending_backing": "Unchanged D93 bridge independently duplicates sync/import FDs; successful Vulkan FD import consumes its owned duplicate. Pending destroy returns before FD/native cleanup, retaining backing. Original resource teardown does not own or reclaim those duplicate/native references.",
+    "cleanup_order": "Global virgl_renderer_resource_unref detaches contexts before global resource removal. Candidate detach must clear stale untyped pointers even after shared pipe promotion.",
+    "scope": "Source proof and host stand-ins only. No physical GPU retirement, concurrency or producer-write synchronization proof."
+  },
+  "thread_contract": "Existing serialized GL-owner/reference contract; retained list pointer may not be concurrently detached or mutated during import. No new concurrency support, lock, thread or driver callback contract is introduced.",
+  "limitations": [
+    "No ACK, graceful expected refusal, client-local failure recovery or compositor presentation qualification. Existing EINVAL/sticky decoder error behavior remains.",
+    "Opaque bridge NULL cannot distinguish admission refusal from pending native failure, so both are conservatively blocked against native retry.",
+    "Guard is per global virgl_resource, not per underlying DMA-BUF alias. It does not establish safe producer writes, cross-resource alias reuse or general post-fault recovery.",
+    "Unchanged native quarantine may retain duplicate/native backing until process exit; this patch neither tracks, retries nor reclaims it.",
+    "Existing attach path can drop an older untyped lookup when allocating its wrapper fails. This candidate preserves ownership during set_type staging, not across arbitrary attach OOM.",
+    "Context-hash insertion is verified only for opt-in staging. A failed insertion keeps a globally completed pipe, not an original FD rollback.",
+    "Default detach additionally clears stale/duplicate nonowning records. Active import behavior without opt-in otherwise remains legacy.",
+    "Actual extracted import/detach/global constructor/destructor and all three public factory functions compile with the actual patched header in helper tests; GL/EGL, hash tables and native quarantine are stand-ins.",
+    "Full renderer/internal ABI and installed binary equivalence are unverified; do not enable or package without separate review/build/runtime qualification.",
+    "An already-typed duplicate SET_TYPE still returns legacy success while ignoring changed metadata; this source candidate provides no per-request immutable ACK contract."
+  ],
+  "license": "Modified inherited vrend_renderer.c and virgl_resource.h retain complete upstream MIT notices. Patch does not remove notices; this does not relicense separately marked DroidVM files.",
+  "host_inputs": {
+    "tests/native_import_transactional_staging.py": "35661ca73f24d84f12a027eb254cdf32ab9817b968d3643109eda6cb268a2868",
+    "tests/fixtures/native_import_transactional_staging.c": "91739934a0c9b6a411284334c2d1ef03b569ae2619b625992beef2ebbdd11b1a"
+  }
+}

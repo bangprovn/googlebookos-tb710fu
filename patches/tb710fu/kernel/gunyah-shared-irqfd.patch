@@ -1,0 +1,260 @@
+--- a/drivers/virt/gunyah/gunyah_irqfd.c
++++ b/drivers/virt/gunyah/gunyah_irqfd.c
+@@ -11,33 +11,51 @@
+ #include <linux/module.h>
+ #include <linux/poll.h>
+ #include <linux/printk.h>
++#include <linux/mutex.h>
+ 
+ #include <uapi/linux/gunyah.h>
+ 
+-struct gh_irqfd {
++/* One RM bell is owned per VM/label, with independent eventfd producers.
++ * Registry mutations are serialized here (and by the caller's fn_lock).
++ * Resource callbacks never acquire this mutex: the lock order is registry,
++ * then VM resources_lock. No callback may invert that order.
++ */
++struct gh_irqfd_group {
+ 	struct gh_resource *ghrsc;
+ 	struct gh_vm_resource_ticket ticket;
+-	struct gh_vm_function_instance *f;
+-
++	struct gh_vm *ghvm;
++	struct list_head registry;
++	struct list_head members;
+ 	bool level;
+-
++};
++
++static LIST_HEAD(gh_irqfd_groups);
++static DEFINE_MUTEX(gh_irqfd_groups_lock);
++
++struct gh_irqfd {
++	struct gh_irqfd_group *group;
++	struct list_head member;
+ 	struct eventfd_ctx *ctx;
+ 	wait_queue_entry_t wait;
+ 	poll_table pt;
++	bool queued;
+ };
+ 
+ static int irqfd_wakeup(wait_queue_entry_t *wait, unsigned int mode, int sync, void *key)
+ {
+ 	struct gh_irqfd *irqfd = container_of(wait, struct gh_irqfd, wait);
++	struct gh_irqfd_group *group = irqfd->group;
++	struct gh_resource *ghrsc;
+ 	__poll_t flags = key_to_poll(key);
+ 	int ret = 0;
+ 
+ 	if (flags & EPOLLIN) {
+-		if (irqfd->ghrsc) {
+-			ret = gh_hypercall_bell_send(irqfd->ghrsc->capid, 1, NULL);
++		ghrsc = smp_load_acquire(&group->ghrsc);
++		if (ghrsc) {
++			ret = gh_hypercall_bell_send(ghrsc->capid, 1, NULL);
+ 			if (ret)
+ 				pr_err_ratelimited("Failed to inject interrupt %d: %d\n",
+-						irqfd->ticket.label, ret);
++						group->ticket.label, ret);
+ 		} else
+ 			pr_err_ratelimited("Premature injection of interrupt\n");
+ 	}
+@@ -50,21 +68,21 @@
+ 	struct gh_irqfd *irq_ctx = container_of(pt, struct gh_irqfd, pt);
+ 
+ 	add_wait_queue(wqh, &irq_ctx->wait);
++	irq_ctx->queued = true;
+ }
+ 
+ static bool gh_irqfd_populate(struct gh_vm_resource_ticket *ticket, struct gh_resource *ghrsc)
+ {
+-	struct gh_irqfd *irqfd = container_of(ticket, struct gh_irqfd, ticket);
++	struct gh_irqfd_group *group = container_of(ticket, struct gh_irqfd_group, ticket);
+ 	int ret;
+ 
+-	if (irqfd->ghrsc) {
++	if (READ_ONCE(group->ghrsc)) {
+ 		pr_warn("irqfd%d already got a Gunyah resource. Check if multiple resources with same label were configured.\n",
+-			irqfd->ticket.label);
++			group->ticket.label);
+ 		return false;
+ 	}
+ 
+-	irqfd->ghrsc = ghrsc;
+-	if (irqfd->level) {
++	if (group->level) {
+ 		/* Configure the bell to trigger when bit 0 is asserted (see
+ 		 * irq_wakeup) and for bell to automatically clear bit 0 once
+ 		 * received by the VM (ack_mask).  need to make sure bit 0 is cleared right away,
+@@ -72,30 +90,35 @@
+ 		 * trigger interrupt does not need to set either mask
+ 		 * because irq is listed only once per gh_hypercall_bell_send
+ 		 */
+-		ret = gh_hypercall_bell_set_mask(irqfd->ghrsc->capid, 1, 1);
++		ret = gh_hypercall_bell_set_mask(ghrsc->capid, 1, 1);
+ 		if (ret)
+ 			pr_warn("irq %d couldn't be set as level triggered. Might cause IRQ storm if asserted\n",
+-				irqfd->ticket.label);
+-	}
++				group->ticket.label);
++	}
++	smp_store_release(&group->ghrsc, ghrsc);
+ 
+ 	return true;
+ }
+ 
+ static void gh_irqfd_unpopulate(struct gh_vm_resource_ticket *ticket, struct gh_resource *ghrsc)
+ {
+-	struct gh_irqfd *irqfd = container_of(ticket, struct gh_irqfd, ticket);
+-	u64 cnt;
+-
+-	eventfd_ctx_remove_wait_queue(irqfd->ctx, &irqfd->wait, &cnt);
++	struct gh_irqfd_group *group = container_of(ticket, struct gh_irqfd_group, ticket);
++
++	/* Last-member unbind synchronously removes every eventfd waiter before
++	 * releasing the ticket. VM teardown removes functions before resources.
++	 */
++	smp_store_release(&group->ghrsc, NULL);
+ }
+ 
+ static long gh_irqfd_bind(struct gh_vm_function_instance *f)
+ {
+ 	struct gh_fn_irqfd_arg *args = f->argp;
+-	struct gh_irqfd *irqfd;
++	struct gh_irqfd *irqfd, *member;
++	struct gh_irqfd_group *group, *found = NULL;
+ 	__poll_t events;
+ 	struct fd fd;
+ 	long r;
++	bool shared = false;
+ 
+ 	if (f->arg_size != sizeof(*args))
+ 		return -EINVAL;
+@@ -107,9 +130,6 @@
+ 	irqfd = kzalloc(sizeof(*irqfd), GFP_KERNEL);
+ 	if (!irqfd)
+ 		return -ENOMEM;
+-
+-	irqfd->f = f;
+-	f->data = irqfd;
+ 
+ 	fd = fdget(args->fd);
+ 	if (!fd.file) {
+@@ -123,29 +143,64 @@
+ 		goto err_fdput;
+ 	}
+ 
+-	if (args->flags & GH_IRQFD_FLAGS_LEVEL)
+-		irqfd->level = true;
++	mutex_lock(&gh_irqfd_groups_lock);
++	list_for_each_entry(group, &gh_irqfd_groups, registry) {
++		if (group->ghvm == f->ghvm && group->ticket.label == args->label) {
++			found = group;
++			break;
++		}
++	}
++	if (found) {
++		if (found->level != !!(args->flags & GH_IRQFD_FLAGS_LEVEL)) {
++			r = -EINVAL;
++			goto err_unlock;
++		}
++		list_for_each_entry(member, &found->members, member) {
++			if (member->ctx == irqfd->ctx) {
++				r = -EEXIST;
++				goto err_unlock;
++			}
++		}
++		shared = true;
++	} else {
++		found = kzalloc(sizeof(*found), GFP_KERNEL);
++		if (!found) {
++			r = -ENOMEM;
++			goto err_unlock;
++		}
++		found->ghvm = f->ghvm;
++		found->level = !!(args->flags & GH_IRQFD_FLAGS_LEVEL);
++		INIT_LIST_HEAD(&found->members);
++		found->ticket.resource_type = GH_RESOURCE_TYPE_BELL_TX;
++		found->ticket.label = args->label;
++		found->ticket.owner = THIS_MODULE;
++		found->ticket.populate = gh_irqfd_populate;
++		found->ticket.unpopulate = gh_irqfd_unpopulate;
++		r = gh_vm_add_resource_ticket(f->ghvm, &found->ticket);
++		if (r) {
++			kfree(found);
++			goto err_unlock;
++		}
++		list_add(&found->registry, &gh_irqfd_groups);
++	}
++	irqfd->group = found;
++	list_add(&irqfd->member, &found->members);
++	f->data = irqfd;
+ 
+ 	init_waitqueue_func_entry(&irqfd->wait, irqfd_wakeup);
+ 	init_poll_funcptr(&irqfd->pt, irqfd_ptable_queue_proc);
+-
+-	irqfd->ticket.resource_type = GH_RESOURCE_TYPE_BELL_TX;
+-	irqfd->ticket.label = args->label;
+-	irqfd->ticket.owner = THIS_MODULE;
+-	irqfd->ticket.populate = gh_irqfd_populate;
+-	irqfd->ticket.unpopulate = gh_irqfd_unpopulate;
+-
+-	r = gh_vm_add_resource_ticket(f->ghvm, &irqfd->ticket);
+-	if (r)
+-		goto err_ctx;
+ 
+ 	events = vfs_poll(fd.file, &irqfd->pt);
+ 	if (events & EPOLLIN)
+ 		pr_warn("Premature injection of interrupt\n");
++	if (shared)
++		pr_info_ratelimited("gb-shared-irqfd-v1: sharing label=%u\n", args->label);
++	mutex_unlock(&gh_irqfd_groups_lock);
+ 	fdput(fd);
+ 
+ 	return 0;
+-err_ctx:
++err_unlock:
++	mutex_unlock(&gh_irqfd_groups_lock);
+ 	eventfd_ctx_put(irqfd->ctx);
+ err_fdput:
+ 	fdput(fd);
+@@ -156,10 +211,25 @@
+ static void gh_irqfd_unbind(struct gh_vm_function_instance *f)
+ {
+ 	struct gh_irqfd *irqfd = f->data;
+-
+-	gh_vm_remove_resource_ticket(irqfd->f->ghvm, &irqfd->ticket);
++	struct gh_irqfd_group *group = irqfd->group;
++	u64 cnt;
++
++	mutex_lock(&gh_irqfd_groups_lock);
++	/* Removing a waiter synchronizes with its in-flight wakeup callback.
++	 * Keep the shared bell alive until all producers have been detached.
++	 */
++	if (irqfd->queued)
++		eventfd_ctx_remove_wait_queue(irqfd->ctx, &irqfd->wait, &cnt);
++	list_del(&irqfd->member);
++	if (list_empty(&group->members)) {
++		gh_vm_remove_resource_ticket(f->ghvm, &group->ticket);
++		list_del(&group->registry);
++		kfree(group);
++	}
++	mutex_unlock(&gh_irqfd_groups_lock);
+ 	eventfd_ctx_put(irqfd->ctx);
+ 	kfree(irqfd);
++	f->data = NULL;
+ }
+ 
+ static bool gh_irqfd_compare(const struct gh_vm_function_instance *f,
+@@ -171,6 +241,11 @@
+ 	if (sizeof(*other) != size)
+ 		return false;
+ 
++	/* Preserve the existing label-only removal ABI. Crosvm leaves fd zero
++	 * on removal. Removing a shared label detaches all its producers through
++	 * gh_vm_rm_function_instance, then releases the last member's RM ticket.
++	 * Per-device PCI hot-unplug needs separate userspace/API qualification.
++	 */
+ 	return instance->label == other->label;
+ }
+ 

@@ -1,0 +1,5 @@
+--- a/src/gb_android_image_bridge.h
++++ b/src/gb_android_image_bridge.h
+@@ -29 +29 @@
+-#define GB_IMAGE_SLOTS 4u
++#define GB_IMAGE_SLOTS 8u

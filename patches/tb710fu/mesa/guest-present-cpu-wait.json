@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "scope": "Process-only native no-blit WSI producer-fence isolation; diagnostic only",
+  "source_version": "25.0.7-2+deb13u1",
+  "base_file": "src/vulkan/wsi/wsi_common.c",
+  "base_sha256": "8adf521c3dda82cd798bb928b7459e3bf9d9318f66159d07bdf7587bee741bd9",
+  "result_sha256": "06f44a685d2a14924f6ad2eb4636677c081cf74e94e5616bb18ec7748ff59176",
+  "patch_sha256": "b6d1f5d67d53898a2cf34f26f3c11f4ece4a739a848a63f6c238c42970be923a",
+  "opt_in": {
+    "GB_VENUS_PRESENT_SYNC_V1": "cpu"
+  },
+  "wait_timeout_ns": 2000000000,
+  "timeout_reported_as": "VK_ERROR_UNKNOWN with actual VK_TIMEOUT diagnostic",
+  "application_wait_semaphores_preserved": true,
+  "copy_and_explicit_sync_swapchains_refused": true,
+  "native_pixel_copy_added": false,
+  "acquire_patch": "patches/tb710fu/mesa/guest-acquire-syncfd.json",
+  "installed": false,
+  "runtime_executed": true,
+  "presentation_verified": false,
+  "status": "native_presentation_failure_with_checked_cpu_wait",
+  "license": "MIT; original Intel copyright and full source notice retained",
+  "build_verified": true,
+  "incremental_build_seconds": 2.139,
+  "candidate_sha256": "9d380d75c3ac0f82ce291beeaee5b7608c7a83e4f5b558d6cbd1553c5bffc10b",
+  "actual_native_wait_observed": true,
+  "window_frames": 2400,
+  "window_exit_code": 0,
+  "runtime_report": "docs/tb710fu-present-sync-20261020.json"
+}

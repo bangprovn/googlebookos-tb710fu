@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "revision": 1,
+  "scope": "Failure-only D91 image admission/lifetime/refresh and renderer diagnostics; no reaper or resource-policy changes",
+  "files": [
+    {
+      "path": "src/gb_android_image_bridge.h",
+      "base_path": "artifacts/device/first-boot-20261013/guest-swapchain-budget-20261020-v1/renderer-build-v1/source-overrides/src/gb_android_image_bridge.h",
+      "sha256": "2ae81b3bce46748cd9376d4d22e7432b68f41a87721b330f4513e9b08a2e2611",
+      "result_sha256": "1fcb5f65f83bb3fee6f10fe9d17ae0f2ee5afe2794a5a51887b87fd4a8a886d9"
+    },
+    {
+      "path": "src/vrend_renderer.c",
+      "base_path": "artifacts/device/first-boot-20261013/guest-swapchain-budget-20261020-v1/renderer-build-v1/source-overrides/src/vrend_renderer.c",
+      "sha256": "2e21c2390ae2abd6298040bb77c970c031b82ace57fe9b6a5682f9e980f78cf9",
+      "result_sha256": "6ce1cff7da33fb0f7a07b51ebd169ad8910758eef1a1301b2ca6f7e191236029"
+    }
+  ],
+  "patch_sha256": "28d8f27267f38da84b7f63190c2456d80413639ac2b45fcf1f2981ca009fc48c",
+  "base_renderer_sha256": "156a258fe636cc0c1b1232cbb89871ba6dbaa7811bbe0f3cafa5695c671c1f71",
+  "failure_record_caps": {
+    "GB-ANDROID-IMAGE-STATE": 32,
+    "GB-ANDROID-IMAGE-RENDERER": 16
+  },
+  "generic_32_record_budget_unchanged": true,
+  "image_quota": 8,
+  "source_destination_per_image_limit_bytes": 33554432,
+  "resource_policy_changed": false,
+  "new_vulkan_calls_or_waits": false,
+  "counter_scope": "Existing ACTIVE calls require the single GL-owner thread and reference contract. Atomic cumulative counters saturate atUINT32_MAX; bounded current counts track allocated objects/pending submissions/quarantine retained by the unchanged destructor. Charged slots also include allocation reservations. Cross-counter snapshots are observational, not transactional. No registry or reclaim is introduced.",
+  "limitations": [
+    "Current live counters cover only objects created through the instrumented create path, not externally constructed test objects.",
+    "Header records Vulkan result at the existing failing call; nonVulkan results are tagged vk_result_valid=false.",
+    "D91 quarantine still retains backing until process exit and may lose its caller pointer; diagnostics do not reclaim it.",
+    "Renderer read/import failures can invalidate the compositor context; diagnostic logging does not recover presentation.",
+    "Failure record caps are independent per translation unit and remain finite; later failures after those caps are not individually logged."
+  ],
+  "license": "MIT; original source notices retained",
+  "host_mock_verified": true,
+  "build_verified": true,
+  "installed": true,
+  "runtime_verified": true,
+  "full_port_verified": false,
+  "counter_definitions": {
+    "charged": "Original quota counter; includes allocation reservations and retained quarantine.",
+    "active": "Allocated instrumented objects not classified as quarantined; includes constructors in progress.",
+    "pending": "Instrumented pending flags, cleared only when existing code observes completion or disposes the object; not a fresh measurement of GPU execution.",
+    "quarantined": "Objects retained by existing D91 pending-destroy behavior; no registry or retry is introduced.",
+    "allocated": "Successful C object allocations, including later failed constructors.",
+    "created": "Constructors returning a complete bridge object.",
+    "freed": "Instrumented C object disposals, including failed constructors.",
+    "conservation": "On the existing serialized caller path before cumulative saturation: allocated = active + quarantined + freed. Cross-counter snapshots are not transactions."
+  },
+  "host_inputs": {
+    "tests/fixtures/android_image_bridge_mock.c": "dccaf525b89011360e8169eef00baea4e39b8217f3324808cb47a02b3d0020d5",
+    "artifacts/source/crosvm-android16qpr2-backend/external/virglrenderer/src/gb_vulkan_android.h": "298808a42c18f61a43d9c74beb91815c52f1808b41e4881c0a448f32ff6aa5cc"
+  },
+  "host_validation": {
+    "command": "PYTHONDONTWRITEBYTECODE=1 python3 tests/android_image_state_diagnostics.py",
+    "tests_passed": 8,
+    "mock_scenarios": 8,
+    "sanitizers": [
+      "AddressSanitizer",
+      "UndefinedBehaviorSanitizer"
+    ],
+    "exact_apply_reverse_reapply": true,
+    "scope": "Actual patched bridge C plus extracted actual renderer diagnostic/resource-read helper, mocked GPU/EGL/context calls and real owned Linux descriptors. Missing-EGL and texture-import integration checked in exact source; full renderer compilation is not covered by this fixture; separate candidate build/ABI proof is recorded below.",
+    "intentional_quarantine": "Fixture keeps LeakSanitizer roots only, with no read/retry/reclaim after destroy. Retained FDs and pending backing are asserted; this is not a leak-free or reclamation claim.",
+    "regressions": {
+      "tests/android_image_swapchain_budget.py": 1,
+      "tests/android_image_bridge.py": 4
+    }
+  },
+  "recommended_project_log_filter": "GB-ANDROID-IMAGE(-(LAYOUT|STATE|RENDERER))?:",
+  "candidate_renderer_sha256": "8cd722b0184c61cf1ab8b056a2d0f3d6cbedc22fc904833f156b03f0ab8443e4",
+  "candidate_renderer_bytes": 3177216,
+  "build_seconds": 57.035,
+  "elf_dynamic_abi_matches_d91": true,
+  "dynamic_symbol_abi_entries": 4508,
+  "build_provenance": "artifacts/device/first-boot-20261013/guest-native-state-diag-20261020-v1/renderer-build-v1/provenance.json",
+  "build_scope": "Offline renderer ELF only; no worker/image assembly, installation or physical runtime qualification",
+  "android_boot_verified": true,
+  "runtime_scope": "Original guest boots; actual active-slot refusal and missing-EGL telemetry observed; diagnostics do not repair stale presentation",
+  "runtime_report": "docs/tb710fu-image-diagnostics-20261020.json",
+  "native_runtime_report": "docs/tb710fu-native-slot-pressure-20261020.json"
+}

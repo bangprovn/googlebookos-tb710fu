@@ -1,0 +1,12 @@
+# Explicit owner diagnostic override for one boot; no automatic mount.
+# The controller must first verify no VMs or other bin-directory override.
+on property:debug.gb.crosvm_memory_override=1
+    setprop debug.gb.crosvm_memory_override 0
+    enter_default_mount_ns
+    mount none /system_ext/gb-virt-bin-memory-v1 /apex/com.android.virt/bin bind
+
+# Invoke only after verifying that the active override is this controller's.
+on property:debug.gb.crosvm_memory_override=2
+    setprop debug.gb.crosvm_memory_override 0
+    enter_default_mount_ns
+    umount /apex/com.android.virt/bin

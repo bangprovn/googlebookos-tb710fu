@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "revision": "718f00f8b0483112f804925cf51576a8cade8046",
+  "base_patches": [
+    "android-image-bridge.json",
+    "android-image-layout-diagnostics.json",
+    "android-gbm-format-conversion.json"
+  ],
+  "patch_sha256": "8113642d11435469bee43dd7e73e085eca78d0573546a9fb18058f1b910b1ea4",
+  "files": [
+    {
+      "path": "src/gb_android_image_bridge.h",
+      "sha256": "65301d86028a5c8dd40fcb711c67c209f216970e7fd3b70e9a666cc3e041e889",
+      "result_sha256": "960b84568a52f6302ebeabc215e14f39b6b06957edaa4ecc69591d004aeaf884"
+    },
+    {
+      "path": "src/vrend_renderer.c",
+      "sha256": "2652980cd6348c1eec9deb6b8ec4d6dfebbd9e8144ddb641664d997b9f098514",
+      "result_sha256": "2e21c2390ae2abd6298040bb77c970c031b82ace57fe9b6a5682f9e980f78cf9"
+    }
+  ],
+  "scope": "Explicit linear opaque XBGR/XRGB sources to RGBX AHB by GPU copy or channel-converting blit; preserve opaque alpha-one sampling",
+  "activation": "GB_ANDROID_IMAGE_BRIDGE_V1=diagnostic-linear-v1",
+  "installed": true,
+  "runtime_verified": true,
+  "host_mock_verified": true,
+  "physical_rgbx_control": "docs/tb710fu-native-window-bridge-20261020.json",
+  "conditions": {
+    "android_build_selects": "src/vrend_winsys_gbm_stubs.c",
+    "donor_fingerprint": "Dell/mica/mica:17/CL3B.260622.273.R1/16471258:user/release-keys",
+    "vendor_fingerprint": "Lenovo/TB710FU/TB710FU:16/BP2A.250605.031.A3/ZUI_17.5.04.059_260327_ROW:user/release-keys"
+  },
+  "limits_unchanged": true,
+  "implicit_modifier_accepted": false,
+  "unsupported": [
+    "Unknown or implicit modifiers, including DRM_FORMAT_MOD_INVALID",
+    "sRGB/HDR/multiplanar/nonlinear layouts",
+    "Arbitrary asynchronous producers and concurrent GL contexts"
+  ],
+  "source_requirements": {
+    "src/venus/vkr_context.c": "9537bf89284680e23b0c0ece9eeb0ca202d65a64bce371387a27b341a398aa8a"
+  },
+  "arm64_build_verified": true,
+  "physical_owned_probe_verified": true,
+  "guest_integration_verified": true,
+  "candidate_renderer_sha256": "87dbb3ec4f1af1feaab5422d55203dd74a94b94d7c3c559390eed5f5c5161adf",
+  "runtime_report": "docs/tb710fu-opaque-image-bridge-20261020.json",
+  "runtime_scope": "Actual original guest ABGR/ARGB/XBGR/XRGB explicit LINEAR 32x32 image GPU copy/blit and sampling, three source colors each/all12288pixels; completed producer fences, no native/asynchronous/concurrent qualification"
+}

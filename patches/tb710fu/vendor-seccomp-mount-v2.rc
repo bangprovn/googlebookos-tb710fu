@@ -1,0 +1,14 @@
+# Apply after the complete donor/vendor property pair is observable. Preserve
+# all original filter expressions; only the observed lseek rule is appended.
+on property:sys.boot_completed=1 && property:ro.build.fingerprint=Dell/mica/mica:17/CL3B.260622.273.R1/16471258:user/release-keys && property:ro.vendor.build.fingerprint=Lenovo/TB710FU/TB710FU:16/BP2A.250605.031.A3/ZUI_17.5.04.059_260327_ROW:user/release-keys
+    trigger gb-tb710fu-vendor-seccomp
+
+# Owner diagnostic retry, only when neither fixed target is already mounted.
+# The controller verifies source hashes, firmware pair and mount state first.
+on property:debug.gb.vendor_seccomp=1 && property:ro.build.fingerprint=Dell/mica/mica:17/CL3B.260622.273.R1/16471258:user/release-keys && property:ro.vendor.build.fingerprint=Lenovo/TB710FU/TB710FU:16/BP2A.250605.031.A3/ZUI_17.5.04.059_260327_ROW:user/release-keys
+    setprop debug.gb.vendor_seccomp 0
+    trigger gb-tb710fu-vendor-seccomp
+
+on gb-tb710fu-vendor-seccomp
+    mount none /system_ext/gb-vendor-seccomp/qsap_qapeservice.policy /vendor/etc/seccomp_policy/qsap_qapeservice.policy bind
+    mount none /system_ext/gb-vendor-seccomp/qesdksec.policy /vendor/etc/seccomp_policy/qesdksec.policy bind

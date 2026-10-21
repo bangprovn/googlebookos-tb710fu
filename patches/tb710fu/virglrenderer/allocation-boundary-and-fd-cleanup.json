@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "path": "artifacts/source/crosvm-android16qpr2-backend/external/virglrenderer/src/venus/vkr_device_memory.c",
+  "sha256": "e267c966124511e9d0c4d29515a44b5a0cceddf30c86ba2514ff081f7312bf44",
+  "result_sha256": "69c91b7cfd4fcf274aad90333c427b7652c35295272c270b9df75a25db66c64e",
+  "patch_sha256": "017aeca710eecec47eb17e37561b582ec0709d55c41f8f548925e3ea83cc5e02",
+  "revision": "718f00f8b0483112f804925cf51576a8cade8046",
+  "license": "MIT per retained source header",
+  "scope": "Release retained UDMABUF after failed memory object creation; bounded allocator request/selection/result metadata under explicit diagnostics",
+  "runtime_verified": false,
+  "installed": true,
+  "allocation_metadata_observed": true,
+  "fd_cleanup_host_unit_verified": true,
+  "native_failure_cleanup_runtime_verified": false,
+  "runtime_report": "docs/tb710fu-venus-udmabuf-20261020.json"
+}

@@ -1,0 +1,2721 @@
+--- a/mm/page_alloc.c
++++ b/mm/page_alloc.c
+@@ -17,6 +17,7 @@
+ 
+ #include <linux/stddef.h>
+ #include <linux/mm.h>
++#include <linux/gb-gunyah-pool.h>
+ #include <linux/highmem.h>
+ #include <linux/swap.h>
+ #include <linux/swapops.h>
+@@ -2562,8 +2563,8 @@
+ 	return (flags & __GFP_SKIP_ZERO);
+ }
+ 
+-inline void post_alloc_hook(struct page *page, unsigned int order,
+-				gfp_t gfp_flags)
++static void gb_post_alloc_hook(struct page *page, unsigned int order,
++				gfp_t gfp_flags, bool set_ref)
+ {
+ 	bool init = !want_init_on_free() && want_init_on_alloc(gfp_flags) &&
+ 			!should_skip_init(gfp_flags);
+@@ -2572,7 +2573,8 @@
+ 	int i;
+ 
+ 	set_page_private(page, 0);
+-	set_page_refcounted(page);
++	if (set_ref)
++		set_page_refcounted(page);
+ 
+ 	arch_alloc_page(page, order);
+ 	debug_pagealloc_map_pages(page, 1 << order);
+@@ -2637,6 +2639,37 @@
+ 	set_page_owner(page, order, gfp_flags);
+ 	page_table_check_alloc(page, order);
+ }
++
++inline void post_alloc_hook(struct page *page, unsigned int order, gfp_t flags)
++{
++	gb_post_alloc_hook(page, order, flags, true);
++}
++
++#if IS_BUILTIN(CONFIG_GUNYAH)
++DEFINE_STATIC_KEY_FALSE(gb_gunyah_pool_key);
++/* Metadata only under free/pool locks; native unpoison/zeroing is deferred
++ * until serve, outside all locks. The pool is4KiB/order9 only.
++ */
++void gb_gunyah_pool_rebuild(struct page *page)
++{
++	int i;
++	set_page_count(page, 1);
++	prep_compound_page(page, 9);
++	for (i = 1; i < 512; i++)
++		set_page_count(page + i, 0);
++	page->mapping = NULL;
++	INIT_LIST_HEAD(&page->lru);
++}
++
++void gb_gunyah_pool_prepare(struct page *page, gfp_t flags)
++{
++	/* Keep pool+caller references; retain native HW KASAN, tags, zeroing,
++	 * page-owner and page-table-check handling on every ownership change.
++	 */
++	flags &= ~__GFP_SKIP_ZERO;
++	gb_post_alloc_hook(page, 9, flags | __GFP_ZERO | __GFP_ZEROTAGS, false);
++}
++#endif
+ 
+ static void prep_new_page(struct page *page, unsigned int order, gfp_t gfp_flags,
+ 							unsigned int alloc_flags)
+@@ -5826,6 +5859,14 @@
+ 	if (!prepare_alloc_pages(gfp, order, preferred_nid, nodemask, &ac,
+ 			&alloc_gfp, &alloc_flags))
+ 		return NULL;
++
++#if IS_BUILTIN(CONFIG_GUNYAH)
++	if (order == 9 && static_branch_unlikely(&gb_gunyah_pool_key)) {
++		page = gb_gunyah_pool_take(alloc_gfp, preferred_nid, ac.nodemask);
++		if (page)
++			goto out;
++	}
++#endif
+ 
+ 	/*
+ 	 * Forbid the first pass from falling back to types that fragment
+--- a/drivers/virt/gunyah/Makefile
++++ b/drivers/virt/gunyah/Makefile
+@@ -3,7 +3,7 @@
+ obj-$(CONFIG_GUNYAH_PLATFORM_HOOKS) += gunyah_platform_hooks.o
+ obj-$(CONFIG_GUNYAH_QCOM_PLATFORM) += gunyah_qcom.o
+ 
+-gunyah-y += rsc_mgr.o rsc_mgr_rpc.o vm_mgr.o vm_mgr_mm.o gb-runtime-share.o
++gunyah-y += rsc_mgr.o rsc_mgr_rpc.o vm_mgr.o vm_mgr_mm.o gb-runtime-share.o gb-ram-pool.o
+ obj-$(CONFIG_GUNYAH) += gunyah.o
+ 
+ obj-$(CONFIG_GUNYAH_VCPU) += gunyah_vcpu.o
+--- a/drivers/virt/gunyah/vm_mgr.c
++++ b/drivers/virt/gunyah/vm_mgr.c
+@@ -8,6 +8,7 @@
+ #include <linux/anon_inodes.h>
+ #include <linux/compat.h>
+ #include <linux/file.h>
++#include <linux/gb-gunyah-pool.h>
+ #include <linux/gunyah_rsc_mgr.h>
+ #include <linux/gunyah_vm_mgr.h>
+ #include <linux/miscdevice.h>
+@@ -766,6 +767,7 @@
+ 			dev_warn(ghvm->parent, "Failed to deallocate vmid: %d\n", ret);
+ 	}
+ 
++	gb_gunyah_pool_vm_release(ghvm);
+ 	gh_rm_put(ghvm->rm);
+ 	mmdrop(ghvm->mm);
+ 	kfree(ghvm);
+--- a/drivers/virt/gunyah/gb-runtime-share.c
++++ b/drivers/virt/gunyah/gb-runtime-share.c
+@@ -4,6 +4,7 @@
+  * symbol lookup, module-signature changes or copied private structures.
+  */
+ #include <linux/file.h>
++#include <linux/gb-gunyah-pool.h>
+ #include <linux/compat.h>
+ #include <linux/fs.h>
+ #include <linux/gunyah_rsc_mgr.h>
+@@ -213,6 +214,7 @@
+ 	void __user *user = (void __user *)arg;
+ 	struct ghsm_share_blob b;
+ 	struct ghsm_unshare_blob u;
++	struct ghsm_bind_ram_pool pool;
+ 	struct gh_vm *vm;
+ 	struct file *vm_file;
+ 	int fd, ret;
+@@ -225,6 +227,14 @@
+ 		if (copy_from_user(&u, user, sizeof(u)))
+ 			return -EFAULT;
+ 		fd = u.vm_fd;
++	} else if (cmd == GHSM_BIND_RAM_POOL) {
++		if (copy_from_user(&pool, user, sizeof(pool)))
++			return -EFAULT;
++		if (pool.flags > 1 || pool.reserved || pool.available_2m ||
++		    pool.served_2m || pool.held_2m ||
++		    pool.memory_size != (2042ULL << 20))
++			return -EINVAL;
++		fd = pool.vm_fd;
+ 	} else {
+ 		return -ENOTTY;
+ 	}
+@@ -245,7 +255,15 @@
+ 	if (ret)
+ 		goto put;
+ 	down_read(&vm->status_lock);
+-	ret = cmd == GHSM_SHARE_BLOB ? gb_share_create(vm, &b) : gb_share_reclaim(vm, u.label);
++	if (cmd == GHSM_BIND_RAM_POOL) {
++		ret = vm->vm_status == GH_RM_VM_STATUS_NO_STATE ?
++			gb_gunyah_pool_control(vm, pool.memory_size, pool.flags == 1,
++				&pool.available_2m, &pool.served_2m, &pool.held_2m) : -EBUSY;
++		if (!ret && copy_to_user(user, &pool, sizeof(pool)))
++			ret = -EFAULT;
++	} else {
++		ret = cmd == GHSM_SHARE_BLOB ? gb_share_create(vm, &b) : gb_share_reclaim(vm, u.label);
++	}
+ 	/* On copy failure the successful parcel remains tracked. The caller can
+ 	 * reclaim by label, or close the VM to perform normal stop/reset/teardown.
+ 	 */
+--- a/drivers/virt/gunyah/gb-runtime-share.h
++++ b/drivers/virt/gunyah/gb-runtime-share.h
+@@ -24,6 +24,21 @@
+ 	__u32 label;
+ };
+ 
++/* Our in-tree optional RAM supply, not a stock/OEM ABI. flags0 binds;
++ * flags1 queries this VM's existing binding. Outputs must enter as zero.
++ * Only the2042MiB runtime window is currently supported.
++ */
++struct ghsm_bind_ram_pool {
++	__s32 vm_fd;
++	__u32 flags;
++	__u64 memory_size;
++	__u32 available_2m;
++	__u32 served_2m;
++	__u32 held_2m;
++	__u32 reserved;
++};
++#define GHSM_BIND_RAM_POOL _IOWR(0x47, 0x17, struct ghsm_bind_ram_pool)
++
+ #define GHSM_SHARE_BLOB _IOWR(0x47, 0x14, struct ghsm_share_blob)
+ #define GHSM_UNSHARE_BLOB _IOW(0x47, 0x15, struct ghsm_unshare_blob)
+ 
+--- /dev/null
++++ b/include/linux/gb-gunyah-pool.h
+@@ -0,0 +1,29 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef _LINUX_GB_GUNYAH_POOL_H
++#define _LINUX_GB_GUNYAH_POOL_H
++
++#include <linux/errno.h>
++#include <linux/gfp_types.h>
++#include <linux/jump_label.h>
++#include <linux/kconfig.h>
++#include <linux/nodemask.h>
++#include <linux/types.h>
++
++struct page;
++struct gh_vm;
++#if IS_BUILTIN(CONFIG_GUNYAH)
++DECLARE_STATIC_KEY_FALSE(gb_gunyah_pool_key);
++struct page *gb_gunyah_pool_take(gfp_t gfp, int preferred_nid,
++			       nodemask_t *mask);
++void gb_gunyah_pool_rebuild(struct page *page);
++void gb_gunyah_pool_prepare(struct page *page, gfp_t gfp);
++int gb_gunyah_pool_control(struct gh_vm *vm, u64 bytes, bool query,
++			  u32 *avail, u32 *served, u32 *held);
++void gb_gunyah_pool_vm_release(struct gh_vm *vm);
++#else
++static inline int gb_gunyah_pool_control(struct gh_vm *vm, u64 bytes,
++		bool query, u32 *avail, u32 *served, u32 *held)
++{ return -EOPNOTSUPP; }
++static inline void gb_gunyah_pool_vm_release(struct gh_vm *vm) {}
++#endif
++#endif
+--- /dev/null
++++ b/drivers/virt/gunyah/gb-ram-pool.c
+@@ -0,0 +1,284 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Optional early dense RAM supply. GPL-2.0 pool/owner core is retained from
++ * Droid-VM/gh-hugepage-reserve e15c40d600dd19b2c5bcb220a92f7359c9ee0846.
++ * No probes, private offsets, symbol resolution, CMA relabeling or reclaim
++ * overrides. The caller must explicitly bind its real VM before allocation.
++ */
++#include <linux/gb-gunyah-pool.h>
++#if IS_BUILTIN(CONFIG_GUNYAH)
++#include <linux/file.h>
++#include <linux/init.h>
++#include <linux/interrupt.h>
++#include <linux/ioport.h>
++#include <linux/jiffies.h>
++#include <linux/mm.h>
++#include <linux/memblock.h>
++#include <linux/mmzone.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/pageblock-flags.h>
++#include <linux/sched/mm.h>
++#include <linux/slab.h>
++#include <linux/swap.h>
++#include <linux/vmalloc.h>
++#include <linux/workqueue.h>
++#include <trace/events/sched.h>
++#include <trace/hooks/mm.h>
++#include "vm_mgr.h"
++
++#include "reserve-core/gh_defs.h"
++#include "reserve-core/gh_kernel_env.h"
++static bool gb_free_active;
++bool gh_free_hook_active(void) { return READ_ONCE(gb_free_active); }
++void gh_rebuild_order9(struct page *page) { gb_gunyah_pool_rebuild(page); }
++#include "reserve-core/gh_owner.c.inc"
++#include "reserve-core/gh_pool.c.inc"
++
++static unsigned int gb_pool_mib;
++static bool gb_ready;
++static DEFINE_MUTEX(gb_bind_lock);
++static struct gh_vm *gb_bound_vm;
++static pid_t gb_bound_tgid;
++static struct delayed_work gb_release_work;
++static atomic_t gb_release_rounds = ATOMIC_INIT(0);
++
++static int __init gb_pool_size(char *value)
++{
++	unsigned int mib;
++	if (!kstrtouint(value, 0, &mib) && mib <= 2048 && !(mib & 1))
++		gb_pool_mib = mib;
++	else {
++		gb_pool_mib = 0;
++		pr_warn("gb-ram-pool-v1: invalid size; pool stays disabled\n");
++	}
++	return 0;
++}
++early_param("gb_vm_pool_mib", gb_pool_size);
++
++/* Only this backend is used. Other core intake/CMA operations are absent
++ * from the public adapter; no capability is claimed for them.
++ */
++static bool gb_cap(enum gh_kapi_cap cap) { return false; }
++static struct page *gb_alloc(unsigned int order, int strong)
++{
++	if (order != GH_PAGE_ORDER || strong)
++		return NULL;
++	return alloc_pages(GFP_KERNEL | __GFP_COMP | __GFP_ZERO |
++			   __GFP_NORETRY | __GFP_NOWARN, order);
++}
++static unsigned long gb_migratetype(unsigned long pfn)
++{ return get_pageblock_migratetype(pfn_to_page(pfn)); }
++static bool gb_movable(unsigned long pfn)
++{ return !pfn_valid(pfn) || page_zonenum(pfn_to_page(pfn)) == ZONE_MOVABLE; }
++
++struct gb_ranges { struct gh_ram_range *out; int count, max; };
++static int gb_ram_range(unsigned long start, unsigned long count, void *arg)
++{
++	struct gb_ranges *r = arg;
++	if (r->out && r->count < r->max)
++		r->out[r->count] = (struct gh_ram_range){start, start + count};
++	r->count++;
++	return 0;
++}
++static int gb_walk_ram(struct gh_ram_range *out, int max)
++{
++	struct gb_ranges r = {.out = out, .max = max};
++	int ret = walk_system_ram_range(0, max_pfn, &r, gb_ram_range);
++	return ret ? ret : r.count;
++}
++
++static void gb_pool_free(void *data, struct page *page, struct zone *zone,
++		int order, int migratetype, int flags, bool *bypass)
++{
++	if (order != GH_PAGE_ORDER || !READ_ONCE(gb_ready))
++		return;
++	if (gh_pool_released_return(page) == GH_RETURN_KEEP)
++		*bypass = true;
++}
++
++/* A closed VM is not proof that its pages have been unmapped/unpinned.
++ * The retained core tests real refcounts/mapping state before collection.
++ * Dead-owner give-up relinquishes only the pool's reference, never firmware's.
++ */
++static void gb_release_fn(struct work_struct *work)
++{
++	int pending;
++	pending = gh_pool_served_to_released();
++	/* Order9 frees may wait in per-CPU lists before reaching the typed
++	 * return callback. Drain through the real kernel API, in process context.
++	 */
++	drain_all_pages(NULL);
++	gh_pool_served_to_ext(GH_EXPIRED);
++	gh_pool_owner_sweep();
++	pr_info("gb-ram-pool-v1: release avail=%d served=%d released=%d\n",
++		gh_pool_avail(), gh_pool_served(), gh_pool_released());
++	if (atomic_dec_if_positive(&gb_release_rounds) > 0 || pending)
++		mod_delayed_work(system_wq, &gb_release_work, HZ);
++}
++
++static void gb_process_exit(void *unused, struct task_struct *task)
++{
++	pid_t tgid;
++	int i;
++	bool dead = false;
++	if (!READ_ONCE(gb_ready) || !gh_pool_owner_any())
++		return;
++	tgid = task_tgid_nr(task);
++	if (!gh_owner_tgid_maybe(tgid))
++		return;
++	gh_read_lock(&gh_pid_lock);
++	for (i = 0; i < GH_VM_OWNER_MAX; i++)
++		if (gh_owners[i].mm && gh_owners[i].tgid == tgid &&
++		    !gh_owners[i].dead && gh_mm_users(gh_owners[i].mm) == 0)
++			dead = true;
++	gh_read_unlock(&gh_pid_lock);
++	if (!dead)
++		return;
++	gh_pool_owner_mark_dead(tgid);
++	atomic_set(&gb_release_rounds, GH_RELEASE_ROUNDS);
++	mod_delayed_work(system_wq, &gb_release_work, HZ);
++}
++
++struct page *gb_gunyah_pool_take(gfp_t gfp, int nid, nodemask_t *mask)
++{
++	struct page *page;
++	if (!READ_ONCE(gb_ready) || !current->mm || in_interrupt() || in_atomic() || irqs_disabled() ||
++	    !(gfp & __GFP_MOVABLE) || !(gfp & __GFP_COMP) ||
++	    !(gfp & __GFP_DIRECT_RECLAIM) ||
++	    (gfp & (__GFP_DMA | __GFP_DMA32 | __GFP_ACCOUNT)) ||
++	    ((gfp & __GFP_THISNODE) && nid != 0) ||
++	    (mask && !node_isset(0, *mask)) ||
++	    !gh_pool_owner_maybe(current->mm))
++		return NULL;
++	page = gh_pool_avail_to_served(current->mm, task_tgid_nr(current));
++	if (page)
++		/* Native allocation hygiene, including HW KASAN tags and mandatory
++		 * zeroing, outside every pool/owner/zone lock. Refcount2 is retained:
++		 * one pool protection reference plus the new caller's reference.
++		 */
++		gb_gunyah_pool_prepare(page, gfp);
++	return page;
++}
++
++int gb_gunyah_pool_control(struct gh_vm *vm, u64 bytes, bool query,
++			  u32 *avail, u32 *served, u32 *held)
++{
++	int ret = 0;
++	struct gh_pool_stats stats;
++	if (!READ_ONCE(gb_ready))
++		return -EOPNOTSUPP;
++	if (bytes != (2042ULL << 20))
++		return -EINVAL;
++	mutex_lock(&gb_bind_lock);
++	if (!query && !gb_bound_vm) {
++		gh_pool_served_to_released();
++		drain_all_pages(NULL);
++		gh_pool_owner_sweep();
++	}
++	if (query) {
++		if (gb_bound_vm != vm)
++			ret = -ENOENT;
++	} else if (gb_bound_vm) {
++		ret = gb_bound_vm == vm ? -EALREADY : -EBUSY;
++	} else if (gh_pool_avail() < (bytes >> 21)) {
++		ret = -ENOSPC;
++	} else {
++		gh_pool_owner_sweep();
++		gh_pool_owner_add(current->mm, task_tgid_nr(current), current->comm);
++		if (!gh_pool_owner_maybe(current->mm)) {
++			ret = -ENOSPC;
++		} else {
++			gb_bound_vm = vm;
++			gb_bound_tgid = task_tgid_nr(current);
++		}
++	}
++	gh_pool_stats_snapshot(&stats);
++	*avail = stats.avail;
++	*served = stats.served;
++	*held = stats.avail + stats.served + stats.released + stats.verify;
++	mutex_unlock(&gb_bind_lock);
++	return ret;
++}
++
++void gb_gunyah_pool_vm_release(struct gh_vm *vm)
++{
++	if (!READ_ONCE(gb_ready))
++		return;
++	mutex_lock(&gb_bind_lock);
++	if (gb_bound_vm == vm) {
++		gh_pool_owner_vm_dec(vm->mm, gb_bound_tgid);
++		if (gh_mm_users(vm->mm) == 0)
++			gh_pool_owner_mark_dead(gb_bound_tgid);
++		gb_bound_vm = NULL;
++		atomic_set(&gb_release_rounds, GH_RELEASE_ROUNDS);
++		mod_delayed_work(system_wq, &gb_release_work, HZ);
++	}
++	mutex_unlock(&gb_bind_lock);
++}
++
++static int __init gb_pool_init(void)
++{
++	struct gh_ram_range *ranges;
++	enum gh_target_change change;
++	int n, ret, i, target;
++	if (!gb_pool_mib)
++		return 0;
++	if (PAGE_SHIFT != 12 || num_online_nodes() != 1 || !node_online(0) ||
++	    ((u64)gb_pool_mib << 20) > ((u64)totalram_pages() << PAGE_SHIFT) / 2) {
++		pr_warn("gb-ram-pool-v1: unsupported geometry/budget; disabled\n");
++		return 0;
++	}
++	raw_spin_lock_init(&gh_pool_lock.l);
++	rwlock_init(&gh_pid_lock);
++	INIT_DELAYED_WORK(&gb_release_work, gb_release_fn);
++	gh_kapi = (struct gh_kapi){.cap = gb_cap, .alloc_try = gb_alloc,
++		.get_pfnblock_mt = gb_migratetype, .in_zone_movable = gb_movable};
++	n = gb_walk_ram(NULL, 0);
++	if (n <= 0)
++		return 0;
++	ranges = kcalloc(n, sizeof(*ranges), GFP_KERNEL);
++	if (!ranges)
++		return 0;
++	ret = gb_walk_ram(ranges, n);
++	target = gb_pool_mib / 2;
++	if (ret != n || gh_pool_init_table(ranges, n, target)) {
++		kfree(ranges);
++		gh_pool_teardown_table();
++		pr_warn("gb-ram-pool-v1: table unavailable; disabled\n");
++		return 0;
++	}
++	kfree(ranges);
++	/* Mark real CMA/ZONE_MOVABLE unavailable; never relabel or borrow it. */
++	gh_pool_set_cma_config(GH_PAGE_ORDER, -1);
++	gh_pool_mark_carveouts(MIGRATE_CMA);
++	gh_pool_set_target(GH_TARGET_WANT, target, &change);
++	for (i = 0; i < target; i++) {
++		if (!gh_pool_ext_to_avail(GH_ALLOC_LIGHT, 0, NULL, 0))
++			break;
++		cond_resched();
++	}
++	ret = register_trace_android_vh_free_one_page_bypass(gb_pool_free, NULL);
++	if (!ret) {
++		WRITE_ONCE(gb_free_active, true);
++		ret = register_trace_sched_process_exit(gb_process_exit, NULL);
++		if (ret) {
++			unregister_trace_android_vh_free_one_page_bypass(gb_pool_free, NULL);
++			tracepoint_synchronize_unregister();
++			WRITE_ONCE(gb_free_active, false);
++		}
++	}
++	if (ret) {
++		gh_pool_avail_to_ext(gh_pool_avail());
++		gh_pool_teardown_table();
++		pr_warn("gb-ram-pool-v1: typed callbacks unavailable; disabled\n");
++		return 0;
++	}
++	WRITE_ONCE(gb_ready, true);
++	gh_pool_set_ready(true);
++	static_branch_enable(&gb_gunyah_pool_key);
++	pr_info("gb-ram-pool-v1: ready target=%d avail=%d cma=disabled zeroing=native\n",
++		target, gh_pool_avail());
++	return 0;
++}
++subsys_initcall(gb_pool_init);
++#endif
+--- /dev/null
++++ b/drivers/virt/gunyah/reserve-core/LICENSE.txt
+@@ -0,0 +1,117 @@
++GNU GENERAL PUBLIC LICENSE
++Version 2, June 1991
++
++Copyright (C) 1989, 1991 Free Software Foundation, Inc.
++51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
++
++Everyone is permitted to copy and distribute verbatim copies of this license document, but changing it is not allowed.
++
++Preamble
++
++The licenses for most software are designed to take away your freedom to share and change it. By contrast, the GNU General Public License is intended to guarantee your freedom to share and change free software--to make sure the software is free for all its users. This General Public License applies to most of the Free Software Foundation's software and to any other program whose authors commit to using it. (Some other Free Software Foundation software is covered by the GNU Lesser General Public License instead.) You can apply it to your programs, too.
++
++When we speak of free software, we are referring to freedom, not price. Our General Public Licenses are designed to make sure that you have the freedom to distribute copies of free software (and charge for this service if you wish), that you receive source code or can get it if you want it, that you can change the software or use pieces of it in new free programs; and that you know you can do these things.
++
++To protect your rights, we need to make restrictions that forbid anyone to deny you these rights or to ask you to surrender the rights. These restrictions translate to certain responsibilities for you if you distribute copies of the software, or if you modify it.
++
++For example, if you distribute copies of such a program, whether gratis or for a fee, you must give the recipients all the rights that you have. You must make sure that they, too, receive or can get the source code. And you must show them these terms so they know their rights.
++
++We protect your rights with two steps: (1) copyright the software, and (2) offer you this license which gives you legal permission to copy, distribute and/or modify the software.
++
++Also, for each author's protection and ours, we want to make certain that everyone understands that there is no warranty for this free software. If the software is modified by someone else and passed on, we want its recipients to know that what they have is not the original, so that any problems introduced by others will not reflect on the original authors' reputations.
++
++Finally, any free program is threatened constantly by software patents. We wish to avoid the danger that redistributors of a free program will individually obtain patent licenses, in effect making the program proprietary. To prevent this, we have made it clear that any patent must be licensed for everyone's free use or not licensed at all.
++
++The precise terms and conditions for copying, distribution and modification follow.
++
++TERMS AND CONDITIONS FOR COPYING, DISTRIBUTION AND MODIFICATION
++
++0. This License applies to any program or other work which contains a notice placed by the copyright holder saying it may be distributed under the terms of this General Public License. The "Program", below, refers to any such program or work, and a "work based on the Program" means either the Program or any derivative work under copyright law: that is to say, a work containing the Program or a portion of it, either verbatim or with modifications and/or translated into another language. (Hereinafter, translation is included without limitation in the term "modification".) Each licensee is addressed as "you".
++
++Activities other than copying, distribution and modification are not covered by this License; they are outside its scope. The act of running the Program is not restricted, and the output from the Program is covered only if its contents constitute a work based on the Program (independent of having been made by running the Program). Whether that is true depends on what the Program does.
++
++1. You may copy and distribute verbatim copies of the Program's source code as you receive it, in any medium, provided that you conspicuously and appropriately publish on each copy an appropriate copyright notice and disclaimer of warranty; keep intact all the notices that refer to this License and to the absence of any warranty; and give any other recipients of the Program a copy of this License along with the Program.
++
++You may charge a fee for the physical act of transferring a copy, and you may at your option offer warranty protection in exchange for a fee.
++
++2. You may modify your copy or copies of the Program or any portion of it, thus forming a work based on the Program, and copy and distribute such modifications or work under the terms of Section 1 above, provided that you also meet all of these conditions:
++
++     a) You must cause the modified files to carry prominent notices stating that you changed the files and the date of any change.
++
++     b) You must cause any work that you distribute or publish, that in whole or in part contains or is derived from the Program or any part thereof, to be licensed as a whole at no charge to all third parties under the terms of this License.
++
++     c) If the modified program normally reads commands interactively when run, you must cause it, when started running for such interactive use in the most ordinary way, to print or display an announcement including an appropriate copyright notice and a notice that there is no warranty (or else, saying that you provide a warranty) and that users may redistribute the program under these conditions, and telling the user how to view a copy of this License. (Exception: if the Program itself is interactive but does not normally print such an announcement, your work based on the Program is not required to print an announcement.)
++
++These requirements apply to the modified work as a whole. If identifiable sections of that work are not derived from the Program, and can be reasonably considered independent and separate works in themselves, then this License, and its terms, do not apply to those sections when you distribute them as separate works. But when you distribute the same sections as part of a whole which is a work based on the Program, the distribution of the whole must be on the terms of this License, whose permissions for other licensees extend to the entire whole, and thus to each and every part regardless of who wrote it.
++
++Thus, it is not the intent of this section to claim rights or contest your rights to work written entirely by you; rather, the intent is to exercise the right to control the distribution of derivative or collective works based on the Program.
++
++In addition, mere aggregation of another work not based on the Program with the Program (or with a work based on the Program) on a volume of a storage or distribution medium does not bring the other work under the scope of this License.
++
++3. You may copy and distribute the Program (or a work based on it, under Section 2) in object code or executable form under the terms of Sections 1 and 2 above provided that you also do one of the following:
++
++     a) Accompany it with the complete corresponding machine-readable source code, which must be distributed under the terms of Sections 1 and 2 above on a medium customarily used for software interchange; or,
++
++     b) Accompany it with a written offer, valid for at least three years, to give any third party, for a charge no more than your cost of physically performing source distribution, a complete machine-readable copy of the corresponding source code, to be distributed under the terms of Sections 1 and 2 above on a medium customarily used for software interchange; or,
++
++     c) Accompany it with the information you received as to the offer to distribute corresponding source code. (This alternative is allowed only for noncommercial distribution and only if you received the program in object code or executable form with such an offer, in accord with Subsection b above.)
++
++The source code for a work means the preferred form of the work for making modifications to it. For an executable work, complete source code means all the source code for all modules it contains, plus any associated interface definition files, plus the scripts used to control compilation and installation of the executable. However, as a special exception, the source code distributed need not include anything that is normally distributed (in either source or binary form) with the major components (compiler, kernel, and so on) of the operating system on which the executable runs, unless that component itself accompanies the executable.
++
++If distribution of executable or object code is made by offering access to copy from a designated place, then offering equivalent access to copy the source code from the same place counts as distribution of the source code, even though third parties are not compelled to copy the source along with the object code.
++
++4. You may not copy, modify, sublicense, or distribute the Program except as expressly provided under this License. Any attempt otherwise to copy, modify, sublicense or distribute the Program is void, and will automatically terminate your rights under this License. However, parties who have received copies, or rights, from you under this License will not have their licenses terminated so long as such parties remain in full compliance.
++
++5. You are not required to accept this License, since you have not signed it. However, nothing else grants you permission to modify or distribute the Program or its derivative works. These actions are prohibited by law if you do not accept this License. Therefore, by modifying or distributing the Program (or any work based on the Program), you indicate your acceptance of this License to do so, and all its terms and conditions for copying, distributing or modifying the Program or works based on it.
++
++6. Each time you redistribute the Program (or any work based on the Program), the recipient automatically receives a license from the original licensor to copy, distribute or modify the Program subject to these terms and conditions. You may not impose any further restrictions on the recipients' exercise of the rights granted herein. You are not responsible for enforcing compliance by third parties to this License.
++
++7. If, as a consequence of a court judgment or allegation of patent infringement or for any other reason (not limited to patent issues), conditions are imposed on you (whether by court order, agreement or otherwise) that contradict the conditions of this License, they do not excuse you from the conditions of this License. If you cannot distribute so as to satisfy simultaneously your obligations under this License and any other pertinent obligations, then as a consequence you may not distribute the Program at all. For example, if a patent license would not permit royalty-free redistribution of the Program by all those who receive copies directly or indirectly through you, then the only way you could satisfy both it and this License would be to refrain entirely from distribution of the Program.
++
++If any portion of this section is held invalid or unenforceable under any particular circumstance, the balance of the section is intended to apply and the section as a whole is intended to apply in other circumstances.
++
++It is not the purpose of this section to induce you to infringe any patents or other property right claims or to contest validity of any such claims; this section has the sole purpose of protecting the integrity of the free software distribution system, which is implemented by public license practices. Many people have made generous contributions to the wide range of software distributed through that system in reliance on consistent application of that system; it is up to the author/donor to decide if he or she is willing to distribute software through any other system and a licensee cannot impose that choice.
++
++This section is intended to make thoroughly clear what is believed to be a consequence of the rest of this License.
++
++8. If the distribution and/or use of the Program is restricted in certain countries either by patents or by copyrighted interfaces, the original copyright holder who places the Program under this License may add an explicit geographical distribution limitation excluding those countries, so that distribution is permitted only in or among countries not thus excluded. In such case, this License incorporates the limitation as if written in the body of this License.
++
++9. The Free Software Foundation may publish revised and/or new versions of the General Public License from time to time. Such new versions will be similar in spirit to the present version, but may differ in detail to address new problems or concerns.
++
++Each version is given a distinguishing version number. If the Program specifies a version number of this License which applies to it and "any later version", you have the option of following the terms and conditions either of that version or of any later version published by the Free Software Foundation. If the Program does not specify a version number of this License, you may choose any version ever published by the Free Software Foundation.
++
++10. If you wish to incorporate parts of the Program into other free programs whose distribution conditions are different, write to the author to ask for permission. For software which is copyrighted by the Free Software Foundation, write to the Free Software Foundation; we sometimes make exceptions for this. Our decision will be guided by the two goals of preserving the free status of all derivatives of our free software and of promoting the sharing and reuse of software generally.
++
++NO WARRANTY
++
++11. BECAUSE THE PROGRAM IS LICENSED FREE OF CHARGE, THERE IS NO WARRANTY FOR THE PROGRAM, TO THE EXTENT PERMITTED BY APPLICABLE LAW. EXCEPT WHEN OTHERWISE STATED IN WRITING THE COPYRIGHT HOLDERS AND/OR OTHER PARTIES PROVIDE THE PROGRAM "AS IS" WITHOUT WARRANTY OF ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE. THE ENTIRE RISK AS TO THE QUALITY AND PERFORMANCE OF THE PROGRAM IS WITH YOU. SHOULD THE PROGRAM PROVE DEFECTIVE, YOU ASSUME THE COST OF ALL NECESSARY SERVICING, REPAIR OR CORRECTION.
++
++12. IN NO EVENT UNLESS REQUIRED BY APPLICABLE LAW OR AGREED TO IN WRITING WILL ANY COPYRIGHT HOLDER, OR ANY OTHER PARTY WHO MAY MODIFY AND/OR REDISTRIBUTE THE PROGRAM AS PERMITTED ABOVE, BE LIABLE TO YOU FOR DAMAGES, INCLUDING ANY GENERAL, SPECIAL, INCIDENTAL OR CONSEQUENTIAL DAMAGES ARISING OUT OF THE USE OR INABILITY TO USE THE PROGRAM (INCLUDING BUT NOT LIMITED TO LOSS OF DATA OR DATA BEING RENDERED INACCURATE OR LOSSES SUSTAINED BY YOU OR THIRD PARTIES OR A FAILURE OF THE PROGRAM TO OPERATE WITH ANY OTHER PROGRAMS), EVEN IF SUCH HOLDER OR OTHER PARTY HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
++
++END OF TERMS AND CONDITIONS
++
++How to Apply These Terms to Your New Programs
++
++If you develop a new program, and you want it to be of the greatest possible use to the public, the best way to achieve this is to make it free software which everyone can redistribute and change under these terms.
++
++To do so, attach the following notices to the program. It is safest to attach them to the start of each source file to most effectively convey the exclusion of warranty; and each file should have at least the "copyright" line and a pointer to where the full notice is found.
++
++     one line to give the program's name and an idea of what it does. Copyright (C) yyyy name of author
++
++     This program is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation; either version 2 of the License, or (at your option) any later version.
++
++     This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
++
++     You should have received a copy of the GNU General Public License along with this program; if not, write to the Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA. Also add information on how to contact you by electronic and paper mail.
++
++If the program is interactive, make it output a short notice like this when it starts in an interactive mode:
++
++     Gnomovision version 69, Copyright (C) year name of author Gnomovision comes with ABSOLUTELY NO WARRANTY; for details type `show w'. This is free software, and you are welcome to redistribute it under certain conditions; type `show c' for details.
++
++The hypothetical commands `show w' and `show c' should show the appropriate parts of the General Public License. Of course, the commands you use may be called something other than `show w' and `show c'; they could even be mouse-clicks or menu items--whatever suits your program.
++
++You should also get your employer (if you work as a programmer) or your school, if any, to sign a "copyright disclaimer" for the program, if necessary. Here is a sample; alter the names:
++
++     Yoyodyne, Inc., hereby disclaims all copyright interest in the program `Gnomovision' (which makes passes at compilers) written by James Hacker.
++
++signature of Ty Coon, 1 April 1989 Ty Coon, President of Vice
+--- /dev/null
++++ b/drivers/virt/gunyah/reserve-core/gh_defs.h
+@@ -0,0 +1,150 @@
++/* gh_hugepage_reserve — shared definitions for every part (unity build).
++ *
++ * This header includes NOTHING. The environment (types, locks, page
++ * primitives, allocator, clock) must be provided before any part is
++ * included: by the kernel unity root (gh_hugepage_reserve.c, real
++ * linux headers) or by tests/shim.h (mock memmap + deterministic fakes).
++ * Parts may only touch pages through the primitive set listed in
++ * POOL_DESIGN.md §3.3 (pfn_to_page / page_to_pfn / page_count / get_page /
++ * put_page / set_page_count / __free_pages / prep_compound_page); folio
++ * flag interpretation lives only in the kapi kernel backend.
++ */
++
++#define GH_PAGE_ORDER		9			/* 2MB serve unit */
++#define GH_PAGES_PER_SLOT	(1UL << GH_PAGE_ORDER)
++#define GH_SLOTS_PER_GB		512			/* 1GB chunk = 512 x 2MB */
++#define GH_SPAN_GB_MAX		1024			/* top[] bound: 1TB pathological span */
++#define GH_NIL			((u32)~0u)
++#define GH_PFN_NONE		(~0UL)
++#define GH_GRACE_SEC		10			/* released_at purge clock (RELEASED only) */
++/* Give-up on served pages is EVENT-driven — pid death — plus a short grace so
++ * the exit path's own teardown (delayed_fput, late unpins) can hand pages back
++ * as a normal COLLECT instead of a give-up. The clock starts only at death and
++ * is never cleared (death is one-way), so it cannot race a VM restart the way
++ * the old idle_since clock did. The grace must end inside the round window the
++ * pid-exit event itself arms (GH_RELEASE_ROUNDS x 1s), so the guaranteed
++ * rounds scan it after expiry with no reliance on self-extension — hence
++ * ROUNDS-2, and ROUNDS must stay >= 2 (compile-time constants: re-check this
++ * pairing whenever either changes). */
++#define GH_RELEASE_ROUNDS	5			/* rounds armed per VM event (1s each) */
++#define GH_DEATH_GRACE_SEC	(GH_RELEASE_ROUNDS - 2)
++_Static_assert(GH_RELEASE_ROUNDS >= 2, "death grace needs ROUNDS >= 2");
++#define GH_VM_OWNER_MAX		8
++#define GH_COMM_LEN		16
++
++/* slot states — NOT_USEABLE must be 0: chunks are zero-allocated and only
++ * cells fully inside a RAM range are promoted to EXT at init (§8). */
++enum gh_state {
++	GH_NOT_USEABLE = 0, GH_EXT, GH_AVAIL, GH_SERVED,
++	GH_RELEASED, GH_CAND, GH_VERIFY, GH_CMA,
++	GH_STATE_MAX,
++};
++
++/* intake origins (reclaim_debug in_* counters, §10) */
++enum gh_origin { GH_IN_HOOK, GH_IN_SWEEP, GH_IN_CMA, GH_IN_USER, GH_IN_REFILL, GH_ORIGIN_MAX };
++
++/* the three avail lists = block classification (§0.2) */
++enum gh_class { GH_L_NON = 0, GH_L_ABLE, GH_L_READY, GH_L_MAX };
++
++struct gh_slot {			/* 20B, fixed (§11) */
++	u8  state;
++	u8  origin;
++	u32 owner_id;			/* SERVED/RELEASED: owner generation+index */
++	u32 released_at;		/* RELEASED: seconds */
++	u32 prev, next;			/* global slot index, GH_NIL; AVAIL only */
++};
++
++struct gh_slist { u32 head, tail; int n; };
++
++/* pool_ext_to_avail modes (§3.2) */
++enum gh_how { GH_ALLOC_BLOCK, GH_ALLOC_LIGHT, GH_ALLOC_FULL, GH_CONTIG_ANY, GH_CONTIG_AT };
++#define GH_INTAKE_NORETRY	1		/* CONTIG_AT: async first pass */
++
++struct gh_intake_budget { int single; int ready; };	/* 2MB pages, §7 */
++
++enum gh_return_result { GH_RETURN_MISS, GH_RETURN_KEEP, GH_RETURN_DROP };
++enum gh_exmode { GH_EXPIRED, GH_ALL };
++enum gh_cma_params_state { GH_CMA_UNAVAILABLE, GH_CMA_PENDING, GH_CMA_VERIFIED };
++enum gh_verify_result { GH_VERIFY_OK, GH_VERIFY_DEFERRED, GH_VERIFY_FAILED };
++enum gh_window_purpose { GH_FILL_TOTAL, GH_FILL_GAP };
++enum gh_evict_mode { GH_EVICT_MEMCG, GH_EVICT_ISOLATE };
++enum gh_scan_which { GH_SCAN_PRECISE, GH_SCAN_MAIN, GH_SCAN_GAP };
++enum gh_target { GH_TARGET_WANT, GH_TARGET_WANT_CMA };
++enum gh_target_change { GH_TGT_SAME, GH_TGT_GROW, GH_TGT_SHRINK };
++
++struct gh_targets { int want, want_cma; };
++
++/* kapi feature ids for kapi.cap() (§3.3) */
++enum gh_kapi_cap {
++	GH_CAP_CONTIG_RANGE, GH_CAP_CONTIG_PAGES, GH_CAP_DROP_SLAB,
++	GH_CAP_EVICT_ISOLATE, GH_CAP_SYS_RECLAIM, GH_CAP_DRAIN,
++	GH_CAP_LRU_DRAIN, GH_CAP_PB_FLAGS, GH_CAP_MAX,
++};
++
++struct gh_ram_range { unsigned long start_pfn, end_pfn; };	/* half-open */
++
++/* kapi backend contract (§3.3): logical adapters, version divergence and
++ * symbol resolution live behind them (kernel backend); the mock backend
++ * (tests/mock_kapi.c) drives the same table from a fake buddy. */
++struct gh_kapi {
++	bool (*cap)(enum gh_kapi_cap f);
++	/* order-9 (or order-cma) allocation, compound; mode: 0=NORETRY cheap,
++	 * 1=RETRY_MAYFAIL (full). NULL page = failure. */
++	struct page *(*alloc_try)(unsigned int order, int strong);
++	/* half-open pfn range primitives; pool normalizes tokens to ranges */
++	bool (*candidate_range)(unsigned long start, unsigned long end);
++	int  (*contig_range)(unsigned long start, unsigned long end, int noretry);
++	int  (*contig_range_cma)(unsigned long start, unsigned long end);
++	struct page *(*contig_pages)(unsigned long nr);
++	void (*evict_range)(int mode, unsigned long start, unsigned long end);
++	int  (*mem_available_mb)(void);
++	bool (*cma_floor_ok)(int nblocks);
++	unsigned long (*cma_free_pages)(void);
++	void (*drop_slab)(void);
++	void (*drain_pages)(void);
++	void (*lru_add_drain_all)(void);
++	unsigned long (*get_pfnblock_mt)(unsigned long pfn);
++	void (*set_pageblock_mt)(unsigned long pfn, int mt);
++	/* discovery + reporting adapters (§8/§10): page/zone/folio judgment
++	 * lives here (§3.3), the pool/sysfs only get values back. */
++	bool (*in_zone_movable)(unsigned long pfn);	/* ZONE_MOVABLE cell */
++	int  (*walk_ram)(struct gh_ram_range *out, int max);	/* present RAM ranges */
++	/* one CMA block's occupancy (pages): free/anon/file. racy report only. */
++	void (*cma_occupancy)(unsigned long base, unsigned long nr,
++			      unsigned long *free, unsigned long *anon,
++			      unsigned long *file);
++};
++
++#define GH_ENOSYS 38
++#define POOL_CMA_BASES_MAX 12288	/* reservoir bound = pool_size_max cap */
++
++#define GH_CMA_ORDER_MAX 11			/* verify guard bound (§3.2) */
++
++struct gh_pool_stats {				/* one consistent O(1) snapshot (§10) */
++	int want, want_cma, size_max, total;
++	int avail, served, released, verify, cma, ext;
++	int avail_non, avail_able, avail_ready;
++	enum gh_cma_params_state cma_params;
++	long reject, orphan, gate_drop, purged;
++	long origin[GH_ORIGIN_MAX];
++};
++struct gh_owner_row {
++	pid_t tgid; char comm[GH_COMM_LEN];
++	int vm_count, dead; long served, abandoned;
++};
++struct gh_owner_stats { int n; long live_served; struct gh_owner_row row[GH_VM_OWNER_MAX]; };
++
++#define GH_PURGE_LOG_MAX 64
++struct gh_purge_rec { unsigned long pfn; int count_at_purge; pid_t tgid; };
++struct gh_purge_log { unsigned int total; int n; struct gh_purge_rec rec[GH_PURGE_LOG_MAX]; };
++
++/* acquire stage authorization bits (§5.1) */
++#define GH_A_PRECISE	1
++#define GH_A_CHEAP	2
++#define GH_A_CTA	4
++#define GH_A_FULL	8
++#define GH_A_MAIN	16
++
++/* adjust profiles (§5.1); priority order for the hand-off */
++enum gh_profile { GH_PROFILE_NONE = 0, GH_PROFILE_INSMOD, GH_PROFILE_RELEASE,
++		  GH_PROFILE_SHRINK, GH_PROFILE_USER };
+--- /dev/null
++++ b/drivers/virt/gunyah/reserve-core/gh_kernel_env.h
+@@ -0,0 +1,64 @@
++/* gh_hugepage_reserve — kernel environment for the pool parts (§8).
++ *
++ * gh_defs.h + gh_owner/pool/release/adjust are environment-agnostic; this
++ * header provides, for the KERNEL unity build, everything they name that is
++ * not standard C: types, lock wrappers, the page primitive set, clock,
++ * allocation, and the free-hook query. The mock counterpart is tests/shim.h.
++ * Included by gh_hugepage_reserve.c after the real <linux/...> headers.
++ */
++#ifndef GH_KERNEL_ENV_H
++#define GH_KERNEL_ENV_H
++
++/* raw spinlock: the pool lock is taken from atomic serve/return context */
++typedef struct { raw_spinlock_t l; } gh_spinlock_t;
++typedef rwlock_t gh_rwlock_t;
++static inline void gh_spin_lock(gh_spinlock_t *s, unsigned long *fl)
++{ raw_spin_lock_irqsave(&s->l, *fl); }
++static inline void gh_spin_unlock(gh_spinlock_t *s, unsigned long *fl)
++{ raw_spin_unlock_irqrestore(&s->l, *fl); }
++static inline void gh_read_lock(gh_rwlock_t *l) { read_lock(l); }
++static inline void gh_read_unlock(gh_rwlock_t *l) { read_unlock(l); }
++/* owner writes are process context only (§2): plain write_lock, no irqsave */
++static inline void gh_write_lock(gh_rwlock_t *l) { write_lock(l); }
++static inline void gh_write_unlock(gh_rwlock_t *l) { write_unlock(l); }
++/* NOTE(on-device): all
++ * pool_owner_* callers are process context (they are: hooks arm workers, the
++ * owner writes happen in vm_boot/shutdown/exit probe handlers = process ctx),
++ * so write_lock (no irqsave) suffices; simplify at wire-up. */
++
++#define GH_READ_ONCE(x)     READ_ONCE(x)
++#define GH_PUBLISH(dst, v)  smp_store_release(&(dst), (v))
++#define GH_WRITE_ONCE(x, v) WRITE_ONCE(x, v)
++#define GH_CTR_ADD(x, v)    ((x) += (v))	/* lock-serialized writers (§2) */
++#define gh_pr_warn(...)     pr_warn(__VA_ARGS__)
++#define gh_pr_info(...)     pr_info(__VA_ARGS__)
++#define gh_cond_resched_every(i) do { if (((i) & 0x3f) == 0) cond_resched(); } while (0)
++static inline void gh_strscpy(char *d, const char *s, int n) { strscpy(d, s, n); }
++
++/* mm handle is a real struct mm_struct * */
++static inline void gh_mmgrab(void *mm) { mmgrab((struct mm_struct *)mm); }
++static inline void gh_mmdrop(void *mm) { mmdrop((struct mm_struct *)mm); }
++static inline int  gh_mm_users(void *mm) { return atomic_read(&((struct mm_struct *)mm)->mm_users); }
++
++/* seconds clock, wrap-safe by construction (u32 diff compares, §11) */
++static inline u32 gh_now_sec(void) { return (u32)(jiffies / HZ); }
++
++/* page primitives — the ONLY window into struct page the pool has (§3.3) */
++/* pfn_to_page/page_to_pfn/page_count/get_page/put_page are kernel-provided. */
++/* raw ->mapping field: version-stable (page_mapping() helper was removed on
++ * 6.12 GKI in favour of folio_mapping); old code used !pg->mapping too. */
++static inline int gh_page_has_mapping(struct page *p) { return p->mapping != NULL; }
++/* rebuild a pool-grade order-9 compound (kapi backend owns prep_compound_page) */
++void gh_rebuild_order9(struct page *head);	/* defined in gh_kapi.c.inc */
++
++static inline void *gh_kzalloc_chunk(void)
++{ return kzalloc(512 * sizeof(struct gh_slot), GFP_KERNEL); }
++static inline void *gh_zalloc(unsigned long n) { return kvzalloc(n, GFP_KERNEL); }
++static inline void  gh_free(void *p) { kvfree(p); }
++
++/* worker scheduling: defined in the unity root (delayed_work wrappers) */
++void gh_sched_adjust(int ms);
++void gh_sched_release(int ms);
++
++#define GH_EBUSY EBUSY
++#endif
+--- /dev/null
++++ b/drivers/virt/gunyah/reserve-core/gh_owner.c.inc
+@@ -0,0 +1,229 @@
++/* gh_hugepage_reserve — owner registry (pool facade, own pid_lock; §2).
++ *
++ * Entry lifetime = pid lifetime: an owner that closed its last VM stays in
++ * the table while the process lives (the app watches vm_count==0 with
++ * served>0 persisting as the slow/stuck-teardown signal, §10). Removal
++ * happens only for dead owners with no SERVED/RELEASED left (sweep), keyed
++ * by the pid-exit hook or the mm_users==0 backstop.
++ *
++ * vm_count is ONLY the serve gate (§2): boot ++, shutdown --, no serving
++ * while 0. It drives no give-up and stamps no clock — giving up on a page
++ * is the EVENT consequence of pid death (the old idle_since+10s clock raced
++ * a 1->0->1 VM restart into false give-ups; removed 2026-08-28).
++ */
++
++struct gh_owner {
++	u32  generation;		/* 0 = free slot; bumped on every (re)register */
++	void *mm;			/* published last, release order (lockless readers) */
++	pid_t tgid;
++	char comm[GH_COMM_LEN];
++	int  vm_count;
++	int  dead;			/* pid-exit hook marked; the ONLY give-up driver */
++	u32  died_at;			/* seconds at death; starts the short give-up
++					 * grace (GH_DEATH_GRACE_SEC). Never cleared:
++					 * death is one-way, so no restart race. */
++	long served;			/* pages currently attributed (report) */
++	long abandoned;			/* pages given up on this owner (report) */
++};
++
++static gh_rwlock_t gh_pid_lock;
++static struct gh_owner gh_owners[GH_VM_OWNER_MAX];
++static u32 gh_owner_next_gen = 1;
++
++/* owner_id = generation<<8 | (slot+1); 0 = none. 24 bits of generation is
++ * plenty: it only has to outrun slot reuse inside one boot. */
++static inline u32 gh_owner_id(int slot) { return (GH_READ_ONCE(gh_owners[slot].generation) << 8) | (u32)(slot + 1); }
++static inline int gh_owner_slot_of(u32 id) { return (int)(id & 0xff) - 1; }
++
++/* resolve owner_id -> live entry, generation-checked; NULL = gone */
++static struct gh_owner *gh_owner_by_id(u32 id)
++{
++	int s = gh_owner_slot_of(id);
++
++	if (s < 0 || s >= GH_VM_OWNER_MAX)
++		return NULL;
++	if (gh_owner_id(s) != id || !GH_READ_ONCE(gh_owners[s].mm))
++		return NULL;
++	return &gh_owners[s];
++}
++
++/* lockless advisory for the serve entry filter (§4): may be stale for an
++ * instant either way; the authoritative check runs in pool_avail_to_served
++ * under pid_lock. Reads only published fields. */
++static bool gh_pool_owner_maybe(void *mm)
++{
++	int i;
++
++	for (i = 0; i < GH_VM_OWNER_MAX; i++)
++		if (GH_READ_ONCE(gh_owners[i].mm) == mm &&
++		    GH_READ_ONCE(gh_owners[i].vm_count) > 0)
++			return true;
++	return false;
++}
++
++/* lockless advisory: is this tgid a tracked owner? The pid-exit tracepoint
++ * fires AFTER exit_mm, so task->mm is already NULL there -- an mm-based filter
++ * (owner_maybe) would always miss on the exit path. Match by tgid instead;
++ * mark_dead re-checks under the lock. (Tier-1 find: mm==NULL at sched_process_
++ * exit meant death give-up never armed; mock can't see this — it calls
++ * mark_dead directly, bypassing the tracepoint's mm timing.) */
++static bool gh_owner_tgid_maybe(pid_t tgid)
++{
++	int i;
++
++	for (i = 0; i < GH_VM_OWNER_MAX; i++)
++		if (GH_READ_ONCE(gh_owners[i].mm) &&
++		    GH_READ_ONCE(gh_owners[i].tgid) == tgid)
++			return true;
++	return false;
++}
++
++/* lockless advisory: is ANY owner tracked? The vendor's own Gunyah VMs
++ * (trusted VM / OEM VM / TA VMs) hit the same destroy/reclaim symbols our
++ * kprobes sit on; with no tracked owner there is nothing to release, and
++ * arming the worker for vendor traffic only flaps the app's state display
++ * (§4, Tier-2 find on SM8750). False negatives/positives are harmless —
++ * the facades' owner apis re-verify under pid_lock. */
++static bool gh_pool_owner_any(void)
++{
++	int i;
++
++	for (i = 0; i < GH_VM_OWNER_MAX; i++)
++		if (GH_READ_ONCE(gh_owners[i].mm))
++			return true;
++	return false;
++}
++
++static void gh_pool_owner_add(void *mm, pid_t tgid, const char *comm)
++{
++	int i, free_slot = -1;
++
++	gh_write_lock(&gh_pid_lock);
++	for (i = 0; i < GH_VM_OWNER_MAX; i++) {
++		if (gh_owners[i].mm == mm && !gh_owners[i].dead) {
++			GH_WRITE_ONCE(gh_owners[i].vm_count, gh_owners[i].vm_count + 1);
++			goto out;
++		}
++		if (!gh_owners[i].mm && free_slot < 0)
++			free_slot = i;
++	}
++	if (free_slot >= 0) {
++		struct gh_owner *o = &gh_owners[free_slot];
++
++		GH_WRITE_ONCE(o->generation, gh_owner_next_gen++);
++		o->tgid = tgid;
++		gh_strscpy(o->comm, comm, GH_COMM_LEN);
++		GH_WRITE_ONCE(o->vm_count, 1);
++		o->dead = 0;
++		o->died_at = 0;
++		o->served = 0;
++		o->abandoned = 0;
++		gh_mmgrab(mm);
++		GH_PUBLISH(o->mm, mm);		/* publish last */
++	} else {
++		gh_pr_warn("owner table full, %d untracked\n", (int)tgid);
++		/* sweep only clears the dead; a full table of live owners is
++		 * the documented cost of pid-lifetime entries (§2) */
++	}
++out:
++	gh_write_unlock(&gh_pid_lock);
++}
++
++/* vm_shutdown attribution (§2): mm -> tgid (exit path: current IS the dying
++ * owner) -> sole live owner -> give up (log; give-up waits for pid death). */
++static void gh_pool_owner_vm_dec(void *mm, pid_t tgid)
++{
++	int i, hit = -1, live = 0, sole = -1;
++
++	gh_write_lock(&gh_pid_lock);
++	for (i = 0; i < GH_VM_OWNER_MAX; i++) {
++		if (!gh_owners[i].mm)
++			continue;
++		live++;
++		sole = i;
++		if (hit < 0 && mm && gh_owners[i].mm == mm)
++			hit = i;
++		if (hit < 0 && !mm && gh_owners[i].tgid == tgid && !gh_owners[i].dead)
++			hit = i;
++	}
++	if (hit < 0 && !mm && live == 1)
++		hit = sole;
++	if (hit >= 0) {
++		if (gh_owners[hit].vm_count > 0)
++			GH_WRITE_ONCE(gh_owners[hit].vm_count,
++				      gh_owners[hit].vm_count - 1);
++			/* pure serve-gate maintenance: no stamp, no give-up (§2) */
++	} else {
++		gh_pr_info("unattributed VM destroy (owners=%d)\n", live);
++	}
++	gh_write_unlock(&gh_pid_lock);
++}
++
++static void gh_pool_owner_mark_dead(pid_t tgid)
++{
++	int i;
++
++	gh_write_lock(&gh_pid_lock);
++	for (i = 0; i < GH_VM_OWNER_MAX; i++) {
++		if (gh_owners[i].mm && gh_owners[i].tgid == tgid && !gh_owners[i].dead) {
++			GH_WRITE_ONCE(gh_owners[i].died_at, gh_now_sec());
++			GH_WRITE_ONCE(gh_owners[i].dead, 1);	/* dead published last */
++		}
++	}
++	gh_write_unlock(&gh_pid_lock);
++}
++
++/* GC: only dead owners with no SERVED/RELEASED left (page counts fed by the
++ * pool side); mmdrop outside the lock. Never touches live entries. */
++static void gh_pool_owner_sweep(void)
++{
++	void *drop[GH_VM_OWNER_MAX];
++	int i, ndrop = 0;
++
++	gh_write_lock(&gh_pid_lock);
++	for (i = 0; i < GH_VM_OWNER_MAX; i++) {
++		struct gh_owner *o = &gh_owners[i];
++
++		if (!o->mm)
++			continue;
++		if (!(o->dead || gh_mm_users(o->mm) == 0))
++			continue;			/* alive: keep (UI) */
++		if (GH_READ_ONCE(o->served) > 0)	/* pool-lock writer, no
++							 * common lock: annotated
++							 * read; stale>0 = next
++							 * sweep collects */
++			continue;			/* pages still tracked */
++		drop[ndrop++] = o->mm;
++		o->mm = NULL;				/* generation stays burned */
++	}
++	gh_write_unlock(&gh_pid_lock);
++	for (i = 0; i < ndrop; i++)
++		gh_mmdrop(drop[i]);
++}
++
++/* Lockless advisory: is this owner gone or dead (the give-up event, §2)?
++ * Reads only single-copy-atomic published fields — safe to call WITHOUT
++ * pid_lock, which is exactly why the release pending-count uses it: taking
++ * pid_lock under pool_lock would invert serve's pid->pool order (ABBA). The
++ * value is a hint; the release loop re-evaluates every round (§2/§6). */
++static bool gh_owner_is_dead(u32 owner_id)
++{
++	int s = gh_owner_slot_of(owner_id);
++	struct gh_owner *o;
++
++	if (s < 0 || s >= GH_VM_OWNER_MAX)
++		return true;
++	o = &gh_owners[s];
++	if (gh_owner_id(s) != owner_id || !GH_READ_ONCE(o->mm))
++		return true;			/* generation gone */
++	return GH_READ_ONCE(o->dead);
++}
++
++/* pool side reports a page leaving SERVED/RELEASED attribution */
++static void gh_owner_served_dec(u32 owner_id)
++{
++	struct gh_owner *o = gh_owner_by_id(owner_id);
++
++	if (o && o->served > 0)
++		GH_CTR_ADD(o->served, -1);
++}
+--- /dev/null
++++ b/drivers/virt/gunyah/reserve-core/gh_pool.c.inc
+@@ -0,0 +1,1625 @@
++/* gh_hugepage_reserve — the pool object (POOL_DESIGN.md §2/§3).
++ *
++ * C has no objects; this file IS the object: every piece of pool state and
++ * every lock lives here, consumers (hooks / workers / sysfs) only call the
++ * gh_pool_* public api and get values back. No caller ever holds pool_lock
++ * or reads top[]/slots.
++ *
++ * Complete: addressing, avail tri-list + block classification, serve,
++ * released return (KEEP/DROP), served->released, EXPIRED give-up
++ * (owner death), released purge, shed, all five ext_to_avail intake modes,
++ * cand/grab/promote-conservation, scan sets + ext_cursor, CMA edges
++ * (flip/stage_in/drop + occupancy bucket scan), verify_cma_params, window
++ * actions, carveout marking, targets, snapshots, pool_check.
++ */
++
++/* ── state ─────────────────────────────────────────────── */
++static gh_spinlock_t gh_pool_lock;
++
++static struct gh_slot *gh_top[GH_SPAN_GB_MAX];
++static unsigned long gh_span_base_pfn;		/* aligned down to 1GB */
++static u32 gh_span_slots;			/* 2MB slots covered (incl. holes) */
++
++static int gh_cma_order = GH_PAGE_ORDER;	/* runtime; sim_cma_order may raise */
++#define GH_S		(1u << (gh_cma_order - GH_PAGE_ORDER))
++
++static struct gh_slist gh_avail[GH_L_MAX];
++static long gh_nstate[GH_STATE_MAX];		/* pages (2MB units) per state */
++static u32 gh_released_oldest;			/* seconds; valid when RELEASED>0 */
++
++/* targets & capability (pool state, api-guarded; §2) */
++static int gh_pool_want, gh_pool_want_with_cma, gh_pool_size_max;
++static int gh_pool_total;			/* proven-capacity ceiling (§5.1) */
++static enum gh_cma_params_state gh_cma_params = GH_CMA_UNAVAILABLE;
++/* CMA verify: a small CmaFree delta can be a transient (pcp/vmstat fold lag),
++ * not proof CMA is unobservable. Retry the probe up to this many times before
++ * settling the boot-constant UNAVAILABLE; structural failures skip the count. */
++static int gh_cma_verify_misses;
++#define GH_CMA_VERIFY_MISS_MAX 8
++
++/* debug/forensic counters (§10 reclaim_debug) */
++static long gh_dbg_reject, gh_dbg_orphan, gh_dbg_gate_drop, gh_dbg_purged;
++static long gh_dbg_origin[GH_ORIGIN_MAX];
++
++static struct gh_kapi gh_kapi;			/* backend table (kernel or mock) */
++static int gh_param_debug;			/* pool_check per round (§10 debug) */
++static struct gh_purge_rec gh_purge_log[GH_PURGE_LOG_MAX];
++static unsigned int gh_purge_log_n;		/* total ever; index = n % MAX */
++
++/* record a given-up page before its ref is dropped (§10 purge_log). The
++ * refcount NOW is what other holders still have — recorded only when debug=1
++ * so the "pool short vs phone lost memory" question is answerable. */
++static void gh_purge_log_add(unsigned long pfn, pid_t tgid, int count_now)
++{
++	if (!gh_param_debug)
++		return;
++	gh_purge_log[gh_purge_log_n % GH_PURGE_LOG_MAX] =
++		(struct gh_purge_rec){ .pfn = pfn, .count_at_purge = count_now,
++				       .tgid = tgid };
++	gh_purge_log_n++;
++}
++#ifndef GH_MOCK				/* kernel: prefill-done / worker-quiescent flag (§8/§9) */
++static bool gh_pool_ready_flag;
++bool gh_pool_ready(void) { return GH_READ_ONCE(gh_pool_ready_flag); }
++void gh_pool_set_ready(bool v) { gh_pool_ready_flag = v; }
++#endif
++
++/* ── addressing (two-level, hole-immune; §0.2) ─────────── */
++static inline u32 gh_idx_of_pfn(unsigned long pfn)
++{
++	unsigned long off;
++
++	if (pfn < gh_span_base_pfn)
++		return GH_NIL;
++	off = (pfn - gh_span_base_pfn) >> GH_PAGE_ORDER;
++	if (off >= gh_span_slots || (pfn & (GH_PAGES_PER_SLOT - 1)))
++		return GH_NIL;
++	return (u32)off;
++}
++
++static inline unsigned long gh_pfn_of_idx(u32 idx)
++{
++	return gh_span_base_pfn + ((unsigned long)idx << GH_PAGE_ORDER);
++}
++
++static inline struct gh_slot *gh_slot_at(u32 idx)
++{
++	struct gh_slot *chunk;
++
++	if (idx == GH_NIL || idx >= gh_span_slots)
++		return NULL;
++	chunk = gh_top[idx / GH_SLOTS_PER_GB];
++	return chunk ? &chunk[idx % GH_SLOTS_PER_GB] : NULL;
++}
++
++static inline struct gh_slot *gh_slot_of_pfn(unsigned long pfn)
++{
++	return gh_slot_at(gh_idx_of_pfn(pfn));
++}
++
++/* ── state counter discipline: every transition goes through here ── */
++static inline void gh_set_state(struct gh_slot *s, u8 st)
++{
++	GH_WRITE_ONCE(gh_nstate[s->state], gh_nstate[s->state] - 1);
++	GH_WRITE_ONCE(gh_nstate[st], gh_nstate[st] + 1);
++	GH_WRITE_ONCE(s->state, st);		/* advisory readers pre-scan this */
++}
++
++/* ── avail tri-list primitives ─────────────────────────── */
++static void gh_slist_push(struct gh_slist *l, u32 idx)
++{
++	struct gh_slot *s = gh_slot_at(idx);
++
++	s->prev = l->tail;
++	s->next = GH_NIL;
++	if (l->tail != GH_NIL)
++		gh_slot_at(l->tail)->next = idx;
++	else
++		l->head = idx;
++	l->tail = idx;
++	GH_WRITE_ONCE(l->n, l->n + 1);
++}
++
++static void gh_slist_unlink(struct gh_slist *l, u32 idx)
++{
++	struct gh_slot *s = gh_slot_at(idx);
++
++	if (s->prev != GH_NIL)
++		gh_slot_at(s->prev)->next = s->next;
++	else
++		l->head = s->next;
++	if (s->next != GH_NIL)
++		gh_slot_at(s->next)->prev = s->prev;
++	else
++		l->tail = s->prev;
++	s->prev = s->next = GH_NIL;
++	GH_WRITE_ONCE(l->n, l->n - 1);
++}
++
++static u32 gh_slist_pop(struct gh_slist *l)
++{
++	u32 idx = l->head;
++
++	if (idx != GH_NIL)
++		gh_slist_unlink(l, idx);
++	return idx;
++}
++
++/* ── block classification (derived, never stored; §1.1) ── */
++static inline u32 gh_blk_base(u32 idx) { return idx & ~(GH_S - 1); }
++
++static enum gh_class gh_classify(u32 bidx)
++{
++	u32 i;
++	bool all_avail = true;
++
++	for (i = 0; i < GH_S; i++) {
++		u8 st = gh_slot_at(bidx + i)->state;
++
++		if (st != GH_AVAIL)
++			all_avail = false;
++		if (st != GH_AVAIL && st != GH_SERVED && st != GH_RELEASED &&
++		    st != GH_CAND && st != GH_VERIFY)
++			return GH_L_NON;	/* custody broken: straggler block */
++	}
++	return all_avail ? GH_L_READY : GH_L_ABLE;
++}
++
++/* Re-home every AVAIL cell of the block from list @from to @to (no-op when
++ * equal), skipping @exclude (a cell being inserted/removed by the caller —
++ * it is not on any list, unlinking it would corrupt head/tail). All avail
++ * cells of one block always sit on the SAME list, so the caller derives
++ * @from by classifying BEFORE its own state change. */
++static void gh_rehome(u32 bidx, enum gh_class from, enum gh_class to, u32 exclude)
++{
++	u32 i;
++
++	if (from == to)
++		return;
++	for (i = 0; i < GH_S; i++) {
++		u32 idx = bidx + i;
++
++		if (idx != exclude && gh_slot_at(idx)->state == GH_AVAIL) {
++			gh_slist_unlink(&gh_avail[from], idx);
++			gh_slist_push(&gh_avail[to], idx);
++		}
++	}
++}
++
++/* ── private: avail entry funnel (§3.2 pool_private_avail_in) ── */
++static bool gh_avail_in(unsigned long pfn, u8 expect, u8 origin)
++{
++	struct gh_slot *s = gh_slot_of_pfn(pfn);
++	u32 idx = gh_idx_of_pfn(pfn), bidx;
++	enum gh_class before, after;
++
++	if (!s || s->state != expect) {
++		gh_dbg_reject++;	/* caller frees, MUST NOT change state */
++		return false;
++	}
++	bidx = gh_blk_base(idx);
++	before = gh_classify(bidx);
++	gh_set_state(s, GH_AVAIL);
++	s->origin = origin;
++	after = gh_classify(bidx);
++	gh_rehome(bidx, before, after, idx);	/* siblings follow; self not listed yet */
++	gh_slist_push(&gh_avail[after], idx);	/* self joins the new class */
++	if (origin < GH_ORIGIN_MAX)
++		gh_dbg_origin[origin]++;
++	return true;
++}
++
++/* ── targets (§4 write rules live HERE, one lock) ──────── */
++static int gh_align_up_s(int v)
++{
++	int s = (int)GH_S;
++
++	if (gh_cma_params == GH_CMA_UNAVAILABLE || s <= 1 || v <= 0)
++		return v;
++	v = (v + s - 1) / s * s;
++	if (v > gh_pool_size_max)
++		v = gh_pool_size_max / s * s;
++	return v;
++}
++
++static int gh_effective_total_locked(void)
++{
++	if (gh_cma_params == GH_CMA_UNAVAILABLE || gh_pool_want_with_cma == 0)
++		return gh_pool_want;
++	return gh_pool_want_with_cma > gh_pool_want ?
++	       gh_pool_want_with_cma : gh_pool_want;
++}
++
++int gh_pool_set_target(enum gh_target which, int value, enum gh_target_change *change)
++{
++	unsigned long fl;
++	int old_eff, new_eff, old_want;
++
++	gh_spin_lock(&gh_pool_lock, &fl);
++	if (which == GH_TARGET_WANT_CMA && value != 0 &&
++	    gh_cma_params == GH_CMA_UNAVAILABLE) {
++		gh_spin_unlock(&gh_pool_lock, &fl);
++		return -GH_ENOSYS;
++	}
++	old_eff = gh_effective_total_locked();
++	old_want = gh_pool_want;
++
++	if (value < 0)
++		value = 0;
++	if (value > gh_pool_size_max)
++		value = gh_pool_size_max;
++
++	if (which == GH_TARGET_WANT) {
++		gh_pool_want = gh_align_up_s(value);
++		if (gh_pool_want_with_cma != 0 && gh_pool_want > gh_pool_want_with_cma)
++			gh_pool_want_with_cma = gh_pool_want;	/* pull up (W) */
++	} else {
++		if (value != 0 && value < gh_pool_want)
++			value = gh_pool_want;			/* lift, never shrink want */
++		gh_pool_want_with_cma = gh_align_up_s(value);
++	}
++
++	new_eff = gh_effective_total_locked();
++	if (gh_pool_total > new_eff)
++		gh_pool_total = new_eff;			/* shrink clamps ceiling */
++	if (change)
++		*change = (new_eff < old_eff || gh_pool_want < old_want) ? GH_TGT_SHRINK :
++			  (new_eff > old_eff || gh_pool_want > old_want) ? GH_TGT_GROW : GH_TGT_SAME;
++	gh_spin_unlock(&gh_pool_lock, &fl);
++	return 0;
++}
++
++struct gh_targets gh_pool_targets_snapshot(int is_release_profile)
++{
++	struct gh_targets t;
++	unsigned long fl;
++
++	gh_spin_lock(&gh_pool_lock, &fl);
++	t.want = gh_pool_want;
++	t.want_cma = gh_effective_total_locked();
++	if (is_release_profile) {			/* §5.1: cap by proven */
++		if (t.want_cma > gh_pool_total)
++			t.want_cma = gh_pool_total;
++		if (t.want > t.want_cma)
++			t.want = t.want_cma;
++	}
++	gh_spin_unlock(&gh_pool_lock, &fl);
++	return t;
++}
++
++/* ── queries (O(1) counters) ───────────────────────────── */
++int gh_pool_avail(void)     { return GH_READ_ONCE(gh_avail[GH_L_NON].n) + GH_READ_ONCE(gh_avail[GH_L_ABLE].n) + GH_READ_ONCE(gh_avail[GH_L_READY].n); }
++int gh_pool_served(void)    { return (int)GH_READ_ONCE(gh_nstate[GH_SERVED]); }
++int gh_pool_released(void)  { return (int)GH_READ_ONCE(gh_nstate[GH_RELEASED]); }
++int gh_pool_cma(void)       { return (int)GH_READ_ONCE(gh_nstate[GH_CMA]); }
++int gh_pool_held(void)      { return gh_pool_avail() + (int)GH_READ_ONCE(gh_nstate[GH_SERVED]) +
++				     (int)GH_READ_ONCE(gh_nstate[GH_RELEASED]) + (int)GH_READ_ONCE(gh_nstate[GH_VERIFY]); }
++int gh_pool_noncma_able(void)    { return GH_READ_ONCE(gh_avail[GH_L_NON].n); }
++int gh_pool_avail_cma_able(void) { return gh_cma_params == GH_CMA_VERIFIED ? GH_READ_ONCE(gh_avail[GH_L_READY].n) : 0; }
++enum gh_cma_params_state gh_pool_cma_params_state(void) { return gh_cma_params; }
++bool gh_pool_cma_capable(void)   { return gh_cma_params == GH_CMA_VERIFIED; }
++
++/* ── serve: avail -> served (atomic hot path; §3.2) ────── */
++struct page *gh_pool_avail_to_served(void *mm, pid_t tgid)
++{
++	unsigned long fl;
++	u32 idx = GH_NIL, owner_id = 0;
++	int i, cls;
++	struct gh_owner *o = NULL;
++	struct page *pg;
++
++	/* fixed lock order pid(read) -> pool: owner check + transition is ONE
++	 * event, no TOCTOU against the sweep (§2) */
++	gh_read_lock(&gh_pid_lock);
++	for (i = 0; i < GH_VM_OWNER_MAX; i++)
++		if (gh_owners[i].mm == mm && !gh_owners[i].dead &&
++		    gh_owners[i].vm_count > 0) {
++			o = &gh_owners[i];
++			owner_id = gh_owner_id(i);
++			break;
++		}
++	if (!o) {
++		gh_read_unlock(&gh_pid_lock);
++		return NULL;
++	}
++	(void)tgid;
++	gh_spin_lock(&gh_pool_lock, &fl);
++	for (cls = GH_L_NON; cls < GH_L_MAX; cls++) {	/* non -> able -> ready */
++		idx = gh_slist_pop(&gh_avail[cls]);
++		if (idx != GH_NIL)
++			break;
++	}
++	if (idx == GH_NIL) {
++		gh_spin_unlock(&gh_pool_lock, &fl);
++		gh_read_unlock(&gh_pid_lock);
++		return NULL;
++	}
++	gh_set_state(gh_slot_at(idx), GH_SERVED);	/* state first: cell already off-list */
++	if (cls == GH_L_READY)				/* broke a ready block: S-1 siblings -> able */
++		gh_rehome(gh_blk_base(idx), GH_L_READY, GH_L_ABLE, GH_NIL);
++	GH_WRITE_ONCE(gh_slot_at(idx)->owner_id, owner_id);	/* read locklessly in give-up (§2) */
++	GH_CTR_ADD(o->served, 1);
++	pg = pfn_to_page(gh_pfn_of_idx(idx));
++	get_page(pg);					/* protection ref (§3.2) */
++	gh_spin_unlock(&gh_pool_lock, &fl);
++	gh_read_unlock(&gh_pid_lock);
++	return pg;
++}
++
++/* ── return: free hook event, KEEP or DROP in one lock (§3.2) ── */
++enum gh_return_result gh_pool_released_return(struct page *pg)
++{
++	unsigned long fl, pfn = page_to_pfn(pg);
++	struct gh_slot *s;
++	u32 idx, bidx;
++	int held, held_cma, eff;
++	enum gh_return_result r;
++
++	idx = gh_idx_of_pfn(pfn);
++	s = gh_slot_at(idx);
++	if (!s || GH_READ_ONCE(s->state) != GH_RELEASED)
++		return GH_RETURN_MISS;
++	gh_spin_lock(&gh_pool_lock, &fl);
++	if (s->state != GH_RELEASED) {			/* re-check under lock */
++		gh_spin_unlock(&gh_pool_lock, &fl);
++		return GH_RETURN_MISS;
++	}
++	bidx = gh_blk_base(idx);
++	held = gh_pool_held();				/* this page counts already */
++	held_cma = held + (int)gh_nstate[GH_CMA];
++	eff = gh_effective_total_locked();
++	if (held <= gh_pool_want ||
++	    (held_cma <= eff && gh_classify(bidx) != GH_L_NON)) {
++		/* KEEP: rebuild the order-9 compound inside the same event
++		 * (free_pages_prepare already tore it down), then list it */
++		gh_rebuild_order9(pg);
++		gh_avail_in(pfn, GH_RELEASED, GH_IN_HOOK);
++		if (held_cma > gh_pool_total && held_cma <= eff)
++			gh_pool_total = held_cma;	/* proven capacity (§5.1) */
++		r = GH_RETURN_KEEP;
++	} else {
++		enum gh_class before = gh_classify(bidx);
++
++		gh_set_state(s, GH_EXT);		/* DROP: let the free continue */
++		gh_rehome(bidx, before, gh_classify(bidx), GH_NIL);
++		gh_dbg_gate_drop++;
++		r = GH_RETURN_DROP;
++	}
++	if (GH_READ_ONCE(gh_nstate[GH_RELEASED]) == 0)
++		GH_WRITE_ONCE(gh_released_oldest, 0);
++	gh_spin_unlock(&gh_pool_lock, &fl);
++	return r;
++}
++
++/* ── release worker edges ──────────────────────────────── */
++/* served -> released for idle pages; returns pending (§3.2/§6) */
++int gh_pool_served_to_released(void)
++{
++	unsigned long fl;
++	u32 idx;
++	int pending = 0;
++	u32 now = gh_now_sec();
++
++	for (idx = 0; idx < gh_span_slots; idx++) {
++		struct gh_slot *s = gh_slot_at(idx);
++		struct page *pg;
++		int cnt;
++
++		if (!s || GH_READ_ONCE(s->state) != GH_SERVED)
++			continue;
++		pg = pfn_to_page(gh_pfn_of_idx(idx));
++		cnt = page_count(pg);
++		gh_spin_lock(&gh_pool_lock, &fl);
++		if (s->state != GH_SERVED) {		/* re-validate under lock */
++			gh_spin_unlock(&gh_pool_lock, &fl);
++			continue;
++		}
++		if (cnt == 1 && !gh_page_has_mapping(pg)) {
++			gh_set_state(s, GH_RELEASED);
++			GH_WRITE_ONCE(s->released_at, now);
++			if (gh_nstate[GH_RELEASED] == 1)
++				GH_WRITE_ONCE(gh_released_oldest, now);
++			gh_owner_served_dec(s->owner_id);
++			gh_spin_unlock(&gh_pool_lock, &fl);
++			put_page(pg);			/* outside the lock (§2) */
++			continue;
++		}
++		if (cnt == 0) {				/* orphan: our ref evaporated */
++			gh_set_state(s, GH_RELEASED);
++			GH_WRITE_ONCE(s->released_at, now);
++			if (gh_nstate[GH_RELEASED] == 1)
++				GH_WRITE_ONCE(gh_released_oldest, now);
++			gh_owner_served_dec(s->owner_id);
++			gh_dbg_orphan++;
++			gh_spin_unlock(&gh_pool_lock, &fl);
++			continue;
++		}
++		/* still pinned: pending iff the owner is DEAD (give-up under way,
++		 * bounded by the next round; a LIVE owner's late unpin is simply
++		 * left for a later trigger's round, §6). LOCKLESS
++		 * owner read — taking pid_lock here would invert serve's
++		 * pid->pool order (§2). Advisory: re-checked next round. */
++		if (gh_owner_is_dead(GH_READ_ONCE(s->owner_id)))
++			pending++;
++		gh_spin_unlock(&gh_pool_lock, &fl);
++		gh_cond_resched_every(idx);
++	}
++	return pending;
++}
++
++/* served -> ext: give-up on owner DEATH (§3.2 EXPIRED; a live owner is never
++ * touched, whatever its vm_count) or rmmod ALL */
++int gh_pool_served_to_ext(enum gh_exmode mode)
++{
++	unsigned long fl;
++	u32 idx, now = gh_now_sec();
++	int done = 0;
++
++	for (idx = 0; idx < gh_span_slots; idx++) {
++		struct gh_slot *s = gh_slot_at(idx);
++		struct gh_owner *o;
++		bool expire = (mode == GH_ALL);
++		enum gh_class before;
++		struct page *pg;
++
++		if (!s || GH_READ_ONCE(s->state) != GH_SERVED)
++			continue;
++		if (!expire) {
++			gh_read_lock(&gh_pid_lock);
++			o = gh_owner_by_id(GH_READ_ONCE(s->owner_id));
++			if (!o)
++				expire = true;		/* generation gone */
++			else if (GH_READ_ONCE(o->dead) &&
++				 (u32)(now - GH_READ_ONCE(o->died_at)) >=
++					GH_DEATH_GRACE_SEC)
++				expire = true;		/* pid died AND the short grace is
++							 * over — the exit path's own frees
++							 * got their chance to come home as
++							 * a collect. A LIVE owner is never
++							 * touched, whatever its vm_count */
++			if (expire && o)
++				GH_CTR_ADD(o->abandoned, 1);
++			gh_read_unlock(&gh_pid_lock);
++		}
++		if (!expire)
++			continue;
++		gh_spin_lock(&gh_pool_lock, &fl);
++		if (s->state != GH_SERVED) {
++			gh_spin_unlock(&gh_pool_lock, &fl);
++			continue;
++		}
++		before = gh_classify(gh_blk_base(idx));
++		gh_set_state(s, GH_EXT);		/* state first (§2 b) */
++		gh_rehome(gh_blk_base(idx), before, gh_classify(gh_blk_base(idx)), GH_NIL);
++		gh_owner_served_dec(s->owner_id);
++		gh_dbg_purged++;
++		gh_spin_unlock(&gh_pool_lock, &fl);
++		pg = pfn_to_page(gh_pfn_of_idx(idx));
++		gh_purge_log_add(gh_pfn_of_idx(idx), 0, page_count(pg));
++		put_page(pg);				/* hand back our ref, outside lock */
++		done++;
++		gh_cond_resched_every(idx);
++	}
++	return done;
++}
++
++/* released -> ext purge: EXPIRED with (count,oldest) gate, or ALL */
++int gh_pool_released_to_ext(enum gh_exmode mode)
++{
++	unsigned long fl;
++	u32 idx, now = gh_now_sec(), new_oldest = 0;
++	int done = 0;
++
++	if (mode == GH_EXPIRED &&
++	    (GH_READ_ONCE(gh_nstate[GH_RELEASED]) == 0 ||
++	     (u32)(now - GH_READ_ONCE(gh_released_oldest)) < GH_GRACE_SEC))
++		return 0;				/* O(1) gate */
++	for (idx = 0; idx < gh_span_slots; idx++) {
++		struct gh_slot *s = gh_slot_at(idx);
++		enum gh_class before;
++
++		if (!s || GH_READ_ONCE(s->state) != GH_RELEASED)
++			continue;
++		if (mode == GH_EXPIRED &&
++		    (u32)(now - GH_READ_ONCE(s->released_at)) < GH_GRACE_SEC) {
++			u32 ra = GH_READ_ONCE(s->released_at);
++
++			if (!new_oldest || (int)(ra - new_oldest) < 0)
++				new_oldest = ra;
++			continue;
++		}
++		gh_spin_lock(&gh_pool_lock, &fl);
++		before = gh_classify(gh_blk_base(idx));
++		gh_set_state(s, GH_EXT);		/* page is in buddy already */
++		gh_rehome(gh_blk_base(idx), before, gh_classify(gh_blk_base(idx)), GH_NIL);
++		gh_spin_unlock(&gh_pool_lock, &fl);
++		done++;
++		gh_cond_resched_every(idx);
++	}
++	{
++		unsigned long fl2;
++
++		gh_spin_lock(&gh_pool_lock, &fl2);	/* other writers hold pool_lock */
++		GH_WRITE_ONCE(gh_released_oldest, new_oldest);
++		gh_spin_unlock(&gh_pool_lock, &fl2);
++	}
++	return done;
++}
++
++/* ── shed: avail -> ext, tri-order (§3.2) ──────────────── */
++int gh_pool_avail_to_ext(int n)
++{
++	unsigned long fl;
++	int shed = 0, cls;
++
++	while (shed < n) {
++		u32 idx = GH_NIL;
++		struct page *pg;
++
++		gh_spin_lock(&gh_pool_lock, &fl);
++		for (cls = GH_L_NON; cls < GH_L_MAX; cls++) {
++			idx = gh_slist_pop(&gh_avail[cls]);
++			if (idx != GH_NIL)
++				break;
++		}
++		if (idx == GH_NIL) {
++			gh_spin_unlock(&gh_pool_lock, &fl);
++			break;
++		}
++		gh_set_state(gh_slot_at(idx), GH_EXT);	/* custody exit -> block demotes */
++		if (cls != GH_L_NON)			/* siblings flood into NON */
++			gh_rehome(gh_blk_base(idx), (enum gh_class)cls,
++				  gh_classify(gh_blk_base(idx)), GH_NIL);
++		gh_spin_unlock(&gh_pool_lock, &fl);
++		pg = pfn_to_page(gh_pfn_of_idx(idx));
++		__free_pages(pg, GH_PAGE_ORDER);	/* outside the lock */
++		shed++;
++	}
++	return shed;
++}
++
++
++/* released -> avail by address (AS_PRECISE sweep; §3.2): only pages truly
++ * back in buddy/pcp (page_count==0) — never migrate a new occupant. */
++bool gh_pool_released_to_avail_sweep(unsigned long pfn)
++{
++	unsigned long fl;
++	struct gh_slot *s = gh_slot_of_pfn(pfn);
++	bool ok;
++
++	if (!s || GH_READ_ONCE(s->state) != GH_RELEASED)
++		return false;
++	if (page_count(pfn_to_page(pfn)) != 0)
++		return false;
++	if (gh_kapi.contig_range(pfn, pfn + GH_PAGES_PER_SLOT, 0) != 0)
++		return false;			/* stays released, purge later */
++	gh_rebuild_order9(pfn_to_page(pfn));
++	gh_spin_lock(&gh_pool_lock, &fl);
++	ok = gh_avail_in(pfn, GH_RELEASED, GH_IN_SWEEP);
++	if (gh_nstate[GH_RELEASED] == 0)
++		gh_released_oldest = 0;
++	gh_spin_unlock(&gh_pool_lock, &fl);
++	if (!ok)
++		__free_pages(pfn_to_page(pfn), GH_PAGE_ORDER);
++	return ok;
++}
++
++/* ── scan sets & cursors (pool state; §3.2/§7.2) ───────── */
++static u32 *gh_scan_main, *gh_scan_precise, *gh_scan_cma;
++static u32 gh_main_total, gh_main_pos, gh_gap_end;
++static u32 gh_precise_total, gh_precise_pos;
++static u32 gh_cma_total, gh_cma_pos;
++static u32 gh_ext_cursor;			/* persistent: whole-zone sweep position */
++static u32 gh_cma_rr_cursor;			/* persistent: cma block round-robin */
++static int gh_migrate_cma = -1;			/* runtime MIGRATE_CMA value (preflight) */
++
++/* block custody scan helpers */
++static bool gh_blk_has(u32 bidx, u8 st)
++{
++	u32 i;
++
++	for (i = 0; i < GH_S; i++)
++		if (GH_READ_ONCE(gh_slot_at(bidx + i)->state) == st)
++			return true;
++	return false;
++}
++static bool gh_blk_custody_partial(u32 bidx)
++{	/* some cells ours, some EXT, none not_useable: a gap-repair target */
++	u32 i;
++	bool custody = false, ext = false;
++
++	for (i = 0; i < GH_S; i++) {
++		u8 st = GH_READ_ONCE(gh_slot_at(bidx + i)->state);
++
++		if (st == GH_NOT_USEABLE || st == GH_CMA)
++			return false;
++		if (st == GH_EXT)
++			ext = true;
++		else
++			custody = true;
++	}
++	return custody && ext;
++}
++
++void gh_pool_prepare_scan(int stages)
++{
++	u32 idx, start;
++
++	gh_precise_total = gh_precise_pos = 0;
++	gh_main_total = gh_main_pos = gh_gap_end = 0;
++	if ((stages & GH_A_PRECISE) && gh_kapi.cap(GH_CAP_CONTIG_RANGE)) {
++		for (idx = 0; idx < gh_span_slots; idx++) {
++			struct gh_slot *s = gh_slot_at(idx);
++
++			if (s && GH_READ_ONCE(s->state) == GH_RELEASED &&
++			    page_count(pfn_to_page(gh_pfn_of_idx(idx))) == 0)
++				gh_scan_precise[gh_precise_total++] = idx;
++		}
++	}
++	if (!(stages & GH_A_MAIN) || !gh_kapi.cap(GH_CAP_CONTIG_RANGE))
++		return;
++	if (gh_kapi.lru_add_drain_all)
++		gh_kapi.lru_add_drain_all();	/* USER-run cost only (§7 PREPARE) */
++	/* (1) gap segment: EXT cells of partially-held blocks, address order */
++	for (idx = 0; idx < gh_span_slots; idx += GH_S) {
++		u32 i;
++
++		if (!gh_slot_at(idx) || !gh_blk_custody_partial(idx))
++			continue;
++		for (i = 0; i < GH_S; i++)
++			if (GH_READ_ONCE(gh_slot_at(idx + i)->state) == GH_EXT)
++				gh_scan_main[gh_main_total++] = idx + i;
++	}
++	gh_gap_end = gh_main_total;
++	/* (2)+(3) the rest of EXT strictly AFTER ext_cursor, wrapping once —
++	 * the worker sets the cursor to the window it is about to process
++	 * ("advance before work"), so the next run resumes past it */
++	start = gh_ext_cursor + 1 < gh_span_slots ? gh_ext_cursor + 1 : 0;
++	for (idx = 0; idx < gh_span_slots; idx++) {
++		u32 k = (start + idx) % gh_span_slots;
++		struct gh_slot *s = gh_slot_at(k);
++
++		if (!s || GH_READ_ONCE(s->state) != GH_EXT)
++			continue;
++		if (gh_blk_custody_partial(gh_blk_base(k)))
++			continue;		/* already in the gap segment */
++		gh_scan_main[gh_main_total++] = k;
++	}
++}
++
++unsigned long gh_pool_scan_pop(enum gh_scan_which which, bool *is_gap)
++{
++	u32 idx;
++
++	switch (which) {
++	case GH_SCAN_PRECISE:
++		if (gh_precise_pos >= gh_precise_total)
++			return GH_PFN_NONE;
++		return gh_pfn_of_idx(gh_scan_precise[gh_precise_pos++]);
++	case GH_SCAN_MAIN:
++		if (gh_main_pos >= gh_main_total)
++			return GH_PFN_NONE;
++		idx = gh_scan_main[gh_main_pos];
++		if (is_gap)
++			*is_gap = gh_main_pos < gh_gap_end;
++		gh_main_pos++;
++		return gh_pfn_of_idx(idx);
++	case GH_SCAN_GAP:
++		if (gh_main_pos >= gh_gap_end)
++			return GH_PFN_NONE;
++		return gh_pfn_of_idx(gh_scan_main[gh_main_pos++]);
++	}
++	return GH_PFN_NONE;
++}
++
++int gh_pool_scan_gap_n(void)
++{
++	return gh_main_pos < gh_gap_end ? (int)(gh_gap_end - gh_main_pos) : 0;
++}
++
++void gh_pool_set_cursor(unsigned long pfn)
++{
++	u32 idx = gh_idx_of_pfn(pfn);
++
++	if (idx != GH_NIL)
++		gh_ext_cursor = idx;
++}
++
++void gh_pool_scan_finish(void)
++{
++	gh_precise_total = gh_precise_pos = 0;
++	gh_main_total = gh_main_pos = gh_gap_end = 0;
++	gh_cma_total = gh_cma_pos = 0;
++}
++
++/* ── window actions (token revalidate -> kapi range; §3.2) ── */
++bool gh_pool_window_candidate(unsigned long pfn, enum gh_window_purpose purpose)
++{
++	unsigned long fl;
++	struct gh_slot *s = gh_slot_of_pfn(pfn);
++	bool ok;
++
++	if (!s)
++		return false;
++	gh_spin_lock(&gh_pool_lock, &fl);
++	ok = (GH_READ_ONCE(s->state) == GH_EXT);
++	if (ok && purpose == GH_FILL_TOTAL)
++		ok = gh_effective_total_locked() >
++		     gh_pool_held() + (int)gh_nstate[GH_CMA];
++	if (ok && purpose == GH_FILL_GAP)
++		ok = gh_blk_custody_partial(gh_blk_base(gh_idx_of_pfn(pfn)));
++	gh_spin_unlock(&gh_pool_lock, &fl);
++	return ok && gh_kapi.candidate_range(pfn, pfn + GH_PAGES_PER_SLOT);
++}
++
++bool gh_pool_evict(enum gh_evict_mode mode, unsigned long pfn,
++		   enum gh_window_purpose purpose)
++{
++	unsigned long fl;
++	struct gh_slot *s = gh_slot_of_pfn(pfn);
++	bool ok;
++
++	if (!s)
++		return false;
++	gh_spin_lock(&gh_pool_lock, &fl);
++	ok = (GH_READ_ONCE(s->state) == GH_EXT);
++	gh_spin_unlock(&gh_pool_lock, &fl);
++	(void)purpose;
++	if (ok)
++		gh_kapi.evict_range(mode, pfn, pfn + GH_PAGES_PER_SLOT);
++	return ok;
++}
++
++/* ── cand: assembly holding area + promote conservation (§3.2/§1.1) ── */
++#define GH_CAND_MAX 8
++static u32 gh_cand_fifo[GH_CAND_MAX];
++static int gh_cand_n;
++
++/* promote: cand cells of @bidx -> AVAIL; conservation-free k avail_non cells
++ * (collected into @victims as pfns, freed by the caller OUTSIDE the lock). */
++static int gh_promote_locked(u32 bidx, unsigned long *victims, int maxv)
++{
++	u32 i;
++	int k = 0, nv = 0, j;
++
++	for (i = 0; i < GH_S; i++) {
++		u32 idx = bidx + i;
++
++		if (gh_slot_at(idx)->state != GH_CAND)
++			continue;
++		for (j = 0; j < gh_cand_n; j++)		/* drop from FIFO */
++			if (gh_cand_fifo[j] == idx) {
++				gh_cand_fifo[j] = gh_cand_fifo[--gh_cand_n];
++				break;
++			}
++		gh_avail_in(gh_pfn_of_idx(idx), GH_CAND, GH_IN_USER);
++		k++;
++	}
++	while (k-- > 0 && nv < maxv) {			/* conservation free (§1.1) */
++		u32 v = gh_slist_pop(&gh_avail[GH_L_NON]);
++
++		if (v == GH_NIL)
++			break;				/* short: shed settles later */
++		gh_set_state(gh_slot_at(v), GH_EXT);
++		victims[nv++] = gh_pfn_of_idx(v);
++	}
++	return nv;
++}
++
++bool gh_pool_ext_to_cand(unsigned long pfn, int noretry)
++{
++	unsigned long fl, victims[GH_CAND_MAX + 1];
++	struct gh_slot *s = gh_slot_of_pfn(pfn);
++	u32 idx = gh_idx_of_pfn(pfn), bidx;
++	int nv = 0, i;
++	unsigned long evict_pfn = GH_PFN_NONE;
++
++	if (!s || s->state != GH_EXT)
++		return false;
++	if (gh_kapi.contig_range(pfn, pfn + GH_PAGES_PER_SLOT, noretry) != 0)
++		return false;
++	gh_rebuild_order9(pfn_to_page(pfn));
++	gh_spin_lock(&gh_pool_lock, &fl);
++	if (s->state != GH_EXT) {			/* re-validate (§2) */
++		gh_dbg_reject++;
++		gh_spin_unlock(&gh_pool_lock, &fl);
++		__free_pages(pfn_to_page(pfn), GH_PAGE_ORDER);
++		return false;
++	}
++	if (gh_cand_n >= GH_CAND_MAX) {			/* overflow: oldest self-clears */
++		u32 old = gh_cand_fifo[0], ob = gh_blk_base(old);
++		enum gh_class oc = gh_classify(ob);
++
++		for (i = 0; i < gh_cand_n - 1; i++)
++			gh_cand_fifo[i] = gh_cand_fifo[i + 1];
++		gh_cand_n--;
++		gh_set_state(gh_slot_at(old), GH_EXT);
++		gh_rehome(ob, oc, gh_classify(ob), GH_NIL);
++		evict_pfn = gh_pfn_of_idx(old);
++	}
++	bidx = gh_blk_base(idx);
++	{
++		enum gh_class bc = gh_classify(bidx);
++
++		gh_set_state(s, GH_CAND);		/* custody entry: block may rise */
++		gh_rehome(bidx, bc, gh_classify(bidx), GH_NIL);
++	}
++	gh_cand_fifo[gh_cand_n++] = idx;
++	if (gh_classify(bidx) != GH_L_NON && !gh_blk_has(bidx, GH_EXT))
++		nv = gh_promote_locked(bidx, victims, GH_CAND_MAX);
++	gh_spin_unlock(&gh_pool_lock, &fl);
++	if (evict_pfn != GH_PFN_NONE)
++		__free_pages(pfn_to_page(evict_pfn), GH_PAGE_ORDER);
++	for (i = 0; i < nv; i++)
++		__free_pages(pfn_to_page(victims[i]), GH_PAGE_ORDER);
++	return true;
++}
++
++int gh_pool_cand_to_ext(void)
++{
++	unsigned long fl, pfns[GH_CAND_MAX];
++	int i, n;
++
++	gh_spin_lock(&gh_pool_lock, &fl);
++	n = gh_cand_n;
++	for (i = 0; i < n; i++) {
++		u32 b = gh_blk_base(gh_cand_fifo[i]);
++		enum gh_class c = gh_classify(b);
++
++		pfns[i] = gh_pfn_of_idx(gh_cand_fifo[i]);
++		gh_set_state(gh_slot_at(gh_cand_fifo[i]), GH_EXT);
++		gh_rehome(b, c, gh_classify(b), GH_NIL);
++	}
++	gh_cand_n = 0;
++	gh_spin_unlock(&gh_pool_lock, &fl);
++	for (i = 0; i < n; i++)
++		__free_pages(pfn_to_page(pfns[i]), GH_PAGE_ORDER);
++	return n;
++}
++
++/* ── acquire: ext -> avail (§3.2, all five modes) ──────── */
++/* S>1 sibling completion: after a single landed in a partial block, grab the
++ * EXT siblings cheaply so the block can complete (design: <=S-1 NORETRY). */
++static void gh_try_complete_block(u32 idx)
++{
++	u32 bidx = gh_blk_base(idx), i;
++
++	if (GH_S == 1)
++		return;
++	for (i = 0; i < GH_S; i++) {
++		struct gh_slot *sib = gh_slot_at(bidx + i);
++
++		if (sib->state == GH_EXT)
++			gh_pool_ext_to_cand(gh_pfn_of_idx(bidx + i), 1);
++	}
++}
++
++int gh_pool_ext_to_avail(enum gh_how how, unsigned long at_pfn,
++			 struct gh_intake_budget *budget, int flags)
++{
++	struct page *pg;
++	unsigned long pfn;
++	unsigned long fl;
++	int need, accepted = 0;
++	bool ready_intake;
++
++	ready_intake = (how == GH_ALLOC_BLOCK) || (GH_S == 1);
++
++	/* hard cap re-derived under lock: caller budget is a hint, not trust */
++	gh_spin_lock(&gh_pool_lock, &fl);
++	need = gh_effective_total_locked() -
++	       (gh_pool_held() + (int)gh_nstate[GH_CMA]);
++	if (!ready_intake && gh_pool_held() >= gh_pool_want)
++		need = 0;				/* non-ready singles never pass want */
++	gh_spin_unlock(&gh_pool_lock, &fl);
++	if (need <= 0)
++		return 0;
++	if (budget && (ready_intake ? budget->ready : budget->single) <= 0)
++		return 0;
++
++	switch (how) {
++	case GH_ALLOC_BLOCK: {
++		u32 i;
++
++		if (budget && budget->ready < (int)GH_S)
++			return 0;
++		pg = gh_kapi.alloc_try(gh_cma_order, 0);
++		if (!pg)
++			return 0;
++		pfn = page_to_pfn(pg);
++		gh_spin_lock(&gh_pool_lock, &fl);
++		for (i = 0; i < GH_S; i++) {
++			unsigned long sub = pfn + ((unsigned long)i << GH_PAGE_ORDER);
++
++			gh_rebuild_order9(pfn_to_page(sub));
++			if (gh_avail_in(sub, GH_EXT, GH_IN_USER))
++				accepted++;
++			else {
++				gh_spin_unlock(&gh_pool_lock, &fl);
++				__free_pages(pfn_to_page(sub), GH_PAGE_ORDER);
++				gh_spin_lock(&gh_pool_lock, &fl);
++			}
++		}
++		break;
++	}
++	case GH_ALLOC_LIGHT:
++	case GH_ALLOC_FULL:
++		pg = gh_kapi.alloc_try(GH_PAGE_ORDER, how == GH_ALLOC_FULL);
++		if (!pg)
++			return 0;
++		pfn = page_to_pfn(pg);
++		gh_spin_lock(&gh_pool_lock, &fl);
++		if (gh_avail_in(pfn, GH_EXT,
++				how == GH_ALLOC_FULL ? GH_IN_REFILL : GH_IN_USER))
++			accepted = 1;
++		else {
++			gh_spin_unlock(&gh_pool_lock, &fl);
++			__free_pages(pg, GH_PAGE_ORDER);
++			return 0;
++		}
++		break;
++	case GH_CONTIG_ANY:
++		pg = gh_kapi.contig_pages(GH_PAGES_PER_SLOT);
++		if (!pg)
++			return 0;
++		pfn = page_to_pfn(pg);
++		gh_rebuild_order9(pg);
++		gh_spin_lock(&gh_pool_lock, &fl);
++		if (gh_avail_in(pfn, GH_EXT, GH_IN_USER))
++			accepted = 1;
++		else {
++			gh_spin_unlock(&gh_pool_lock, &fl);
++			__free_pages(pg, GH_PAGE_ORDER);
++			return 0;
++		}
++		break;
++	case GH_CONTIG_AT: {
++		struct gh_slot *s = gh_slot_of_pfn(at_pfn);
++
++		if (!s || s->state != GH_EXT)
++			return 0;
++		if (gh_kapi.contig_range(at_pfn, at_pfn + GH_PAGES_PER_SLOT,
++					 flags & GH_INTAKE_NORETRY) != 0)
++			return 0;
++		pfn = at_pfn;
++		gh_rebuild_order9(pfn_to_page(pfn));
++		gh_spin_lock(&gh_pool_lock, &fl);
++		if (gh_avail_in(pfn, GH_EXT, GH_IN_USER))
++			accepted = 1;
++		else {
++			gh_spin_unlock(&gh_pool_lock, &fl);
++			__free_pages(pfn_to_page(pfn), GH_PAGE_ORDER);
++			return 0;
++		}
++		break;
++	}
++	}
++
++	if (accepted) {					/* proven capacity (§5.1) */
++		int held_cma = gh_pool_held() + (int)gh_nstate[GH_CMA];
++		int eff = gh_effective_total_locked();
++
++		if (held_cma > gh_pool_total)
++			gh_pool_total = held_cma > eff ? eff : held_cma;
++	}
++	gh_spin_unlock(&gh_pool_lock, &fl);
++	if (budget) {					/* deduct per actual result (§3.2) */
++		budget->ready -= accepted;
++		if (!ready_intake || GH_S == 1)
++			budget->single -= accepted;
++	}
++	if (accepted && !ready_intake && how != GH_ALLOC_BLOCK)
++		gh_try_complete_block(gh_idx_of_pfn(pfn));	/* S>1 pairing */
++	return accepted;
++}
++/* ── pool_check: bookkeeping vs table (debug=1; §1 G/U) ── */
++bool gh_pool_check(void)
++{
++	long cnt[GH_STATE_MAX] = {0};
++	int on_list[GH_L_MAX] = {0};
++	u32 idx;
++	int cls;
++	bool ok = true;
++
++	for (idx = 0; idx < gh_span_slots; idx++) {
++		struct gh_slot *s = gh_slot_at(idx);
++
++		if (!s) {
++			idx |= (GH_SLOTS_PER_GB - 1);	/* skip hole GB */
++			continue;
++		}
++		cnt[s->state]++;
++		if (s->state == GH_AVAIL) {
++			enum gh_class c = gh_classify(gh_blk_base(idx));
++			u32 w;
++			bool found = false;
++
++			u32 guard = 0;
++
++			for (w = gh_avail[c].head; w != GH_NIL && guard <= gh_span_slots;
++			     w = gh_slot_at(w)->next, guard++)
++				if (w == idx) { found = true; break; }
++			if (guard > gh_span_slots) {
++				gh_pr_warn("check: list %d cycles\n", c);
++				return false;
++			}
++			if (!found) {
++				gh_pr_warn("check: idx %u AVAIL not on class %d list\n", idx, c);
++				ok = false;
++			}
++		}
++		if (s->state == GH_CMA || gh_slot_at(gh_blk_base(idx))->state == GH_CMA) {
++			u32 i, b = gh_blk_base(idx);	/* U: CMA blocks uniform */
++
++			for (i = 0; i < GH_S; i++)
++				if ((gh_slot_at(b + i)->state == GH_CMA) !=
++				    (s->state == GH_CMA && idx == b + i ? true :
++				     gh_slot_at(b)->state == GH_CMA)) {
++					gh_pr_warn("check: block %u CMA not uniform\n", b);
++					ok = false;
++					break;
++				}
++		}
++	}
++	for (idx = 0; idx < GH_STATE_MAX; idx++)
++		if (cnt[idx] != gh_nstate[idx]) {
++			gh_pr_warn("check: state %u count %ld != %ld\n",
++				   idx, cnt[idx], gh_nstate[idx]);
++			ok = false;
++		}
++	for (cls = 0; cls < GH_L_MAX; cls++) {
++		u32 w, guard = 0;
++
++		for (w = gh_avail[cls].head; w != GH_NIL && guard <= gh_span_slots;
++		     w = gh_slot_at(w)->next, guard++)
++			on_list[cls]++;
++		if (guard > gh_span_slots) {
++			gh_pr_warn("check: list %d cycles\n", cls);
++			return false;
++		}
++		if (on_list[cls] != gh_avail[cls].n) {
++			gh_pr_warn("check: list %d walk %d != n %d\n",
++				   cls, on_list[cls], gh_avail[cls].n);
++			ok = false;
++		}
++	}
++	return ok;
++}
++
++/* ── init (§8 subset: table build + not_useable marking) ── */
++int gh_pool_init_table(const struct gh_ram_range *ranges, int nranges, int size_max)
++{
++	unsigned long lo = ~0UL, hi = 0;
++	int i;
++	u32 g;
++
++	for (i = 0; i < nranges; i++) {
++		if (ranges[i].start_pfn < lo)
++			lo = ranges[i].start_pfn;
++		if (ranges[i].end_pfn > hi)
++			hi = ranges[i].end_pfn;
++	}
++	gh_span_base_pfn = lo & ~((1UL << 18) - 1);	/* 1GB align down */
++	gh_span_slots = (u32)(((hi - gh_span_base_pfn) + (1UL << 18) - 1) >> 18)
++			* GH_SLOTS_PER_GB;
++	if (gh_span_slots / GH_SLOTS_PER_GB > GH_SPAN_GB_MAX)
++		return -1;
++	gh_pool_size_max = size_max;
++	for (g = 0; g < gh_span_slots / GH_SLOTS_PER_GB; g++)
++		gh_top[g] = NULL;
++	for (i = 0; i < GH_L_MAX; i++)
++		gh_avail[i].head = gh_avail[i].tail = GH_NIL, gh_avail[i].n = 0;
++	for (i = 0; i < GH_STATE_MAX; i++)
++		gh_nstate[i] = 0;
++	gh_free(gh_scan_main); gh_free(gh_scan_precise); gh_free(gh_scan_cma);
++	gh_scan_main = gh_zalloc(sizeof(u32) * gh_span_slots);
++	gh_scan_precise = gh_zalloc(sizeof(u32) * gh_span_slots);
++	gh_scan_cma = gh_zalloc(sizeof(u32) * gh_span_slots * 2);
++	if (!gh_scan_main || !gh_scan_precise || !gh_scan_cma)
++		return -1;
++	gh_ext_cursor = 0; gh_cma_rr_cursor = 0;
++	gh_pool_scan_finish();
++	gh_cand_n = 0;
++
++	for (i = 0; i < nranges; i++) {			/* chunks only where RAM lives */
++		unsigned long p;
++
++		for (p = ranges[i].start_pfn & ~((1UL << 18) - 1);
++		     p < ranges[i].end_pfn; p += (1UL << 18)) {
++			u32 gb = (u32)((p - gh_span_base_pfn) >> 18);
++
++			if (!gh_top[gb]) {
++				gh_top[gb] = gh_kzalloc_chunk();
++				if (!gh_top[gb])
++					return -1;
++				gh_nstate[GH_NOT_USEABLE] += GH_SLOTS_PER_GB;
++			}
++		}
++	}
++	for (i = 0; i < nranges; i++) {			/* fully-inside cells -> EXT */
++		unsigned long p = (ranges[i].start_pfn + GH_PAGES_PER_SLOT - 1)
++				  & ~(GH_PAGES_PER_SLOT - 1);
++
++		for (; p + GH_PAGES_PER_SLOT <= ranges[i].end_pfn; p += GH_PAGES_PER_SLOT) {
++			struct gh_slot *s = gh_slot_of_pfn(p);
++
++			if (s && s->state == GH_NOT_USEABLE)
++				gh_set_state(s, GH_EXT);
++		}
++	}
++	return 0;
++}
++
++void gh_pool_mark_not_useable(unsigned long start_pfn, unsigned long end_pfn)
++{
++	unsigned long p;
++
++	for (p = start_pfn & ~(GH_PAGES_PER_SLOT - 1); p < end_pfn; p += GH_PAGES_PER_SLOT) {
++		struct gh_slot *s = gh_slot_of_pfn(p);
++
++		if (s && s->state == GH_EXT)
++			gh_set_state(s, GH_NOT_USEABLE);
++	}
++}
++
++/* ── CMA reservoir edges (§3.2): flip / bucket scan / stage_in / drop ── */
++/* release a held 2MB into the (CMA-labeled) block's own freelist as two
++ * order-8 halves: bypasses pcp AND our own order-9 hook (§3.2 free_to_cma) */
++/* Release one held 2MB page into its (CMA-labeled) block's freelist. The pool
++ * holds these as order-9 COMPOUNDS (gh_rebuild_order9), so we free the compound
++ * as-is with __free_pages(head, 9): free_pages_prepare correctly tears the
++ * compound down. It lands on the CMA freelist because the pageblock is already
++ * CMA-labeled (via a pcp transit whose stored pcppage_migratetype preserves
++ * CMA); the caller drains pcp so the accounting is immediate. The order-9 free
++ * hook sees it but the slot is already CMA (not RELEASED) so it MISSes.
++ *
++ * (The design's order-8 split — bypass pcp AND the hook — needs the page as
++ * plain singles, not a compound; freeing a compound as order-8 trips
++ * free_tail_page_prepare's nonzero-entire_mapcount check. Deferred; §11.) */
++static void gh_free_to_cma(unsigned long pfn)
++{
++	struct page *head = pfn_to_page(pfn);
++
++	set_page_count(head, 1);
++	__free_pages(head, GH_PAGE_ORDER);
++}
++
++static void gh_label_block(u32 bidx, int mt)
++{
++	/* One call: gh_kapi.set_pageblock_mt already labels EVERY real pageblock
++	 * inside the believed block (it spans 1<<cma_order stepping by the real
++	 * pageblock size). Looping here too double-covers into the NEXT believed
++	 * block whenever cma_order > real pageblock_order (i.e. sim, and any
++	 * future case where they differ) — a real over-labeling bug, masked on
++	 * devices only because there cma_order == pageblock_order makes the
++	 * adapter's span exactly one real pageblock. */
++	gh_kapi.set_pageblock_mt(gh_pfn_of_idx(bidx), mt);
++}
++
++int gh_pool_avail_to_cma(int n)
++{
++	unsigned long fl;
++	int flipped = 0;
++
++	if (gh_cma_params != GH_CMA_VERIFIED)
++		return 0;				/* api self-defense (§3.2) */
++	while (flipped < n) {
++		u32 head, bidx, i;
++
++		gh_spin_lock(&gh_pool_lock, &fl);
++		head = gh_avail[GH_L_READY].head;
++		if (head == GH_NIL) {
++			gh_spin_unlock(&gh_pool_lock, &fl);
++			break;
++		}
++		bidx = gh_blk_base(head);
++		for (i = 0; i < GH_S; i++) {		/* whole block, structure-guaranteed */
++			gh_slist_unlink(&gh_avail[GH_L_READY], bidx + i);
++			gh_set_state(gh_slot_at(bidx + i), GH_CMA);
++		}
++		gh_spin_unlock(&gh_pool_lock, &fl);
++		gh_label_block(bidx, gh_migrate_cma);
++		for (i = 0; i < GH_S; i++)
++			gh_free_to_cma(gh_pfn_of_idx(bidx + i));
++		flipped++;
++	}
++	return flipped;
++}
++
++/* run-local occupancy bucket scan (§7.2): snapshot -> probe -> counting sort */
++int gh_pool_prepare_cma_scan(int all)
++{
++	u32 nblk = gh_span_slots / GH_S, b, n = 0, i;
++	u32 *snap = gh_scan_cma;			/* reuse tail half as temp */
++	u8 *score;
++	u32 cnt[9] = {0}, pos[9];
++	unsigned long span_pages = (unsigned long)GH_S << GH_PAGE_ORDER;
++	u32 width = (u32)((span_pages + 7) / 8);
++
++	(void)all;
++	for (b = 0; b < nblk; b++) {			/* address order from rr_cursor */
++		u32 bidx = ((gh_cma_rr_cursor / GH_S + b) % nblk) * GH_S;
++		struct gh_slot *s = gh_slot_at(bidx);
++
++		if (s && s->state == GH_CMA)
++			snap[n++] = bidx;
++	}
++	score = (u8 *)(snap + n);			/* scratch after the snapshot */
++	for (i = 0; i < n; i++) {
++		unsigned long p = gh_pfn_of_idx(snap[i]), occ = 0, k;
++
++		for (k = 0; k < span_pages; k++)	/* racy probe, ranking only */
++			if (page_count(pfn_to_page(p + k)) != 0)
++				occ++;
++		score[i] = occ == 0 ? 0 : (u8)(1 + ((occ - 1) / width > 7 ? 7 : (occ - 1) / width));
++		cnt[score[i]]++;
++	}
++	pos[0] = 0;
++	for (i = 1; i < 9; i++)
++		pos[i] = pos[i - 1] + cnt[i - 1];
++	/* stable counting sort into the front of gh_scan_cma — sort into a
++	 * temp then copy (snap aliases the buffer) */
++	{
++		static u32 sorted[1 << 16];		/* bounded by span slots/S; static: no kmalloc */
++		for (i = 0; i < n; i++)
++			sorted[pos[score[i]]++] = snap[i];
++		for (i = 0; i < n; i++)
++			gh_scan_cma[i] = sorted[i];
++	}
++	gh_cma_total = n;
++	gh_cma_pos = 0;
++	return (int)n;
++}
++
++/* run-local "tried-all" verdict: the pop has nothing left. Reads true with no
++ * scan prepared (scan_finish zeroes both counters) — callers gate on it AFTER
++ * their own prepare when that matters (§7 CTA/CMA_FREE exit conditions). */
++int gh_pool_cma_scan_done(void)
++{
++	return gh_cma_pos >= gh_cma_total;
++}
++
++/* shared pop for stage_in/drop: verify still CMA, advance rr cursor */
++static u32 gh_cma_scan_pop(void)
++{
++	while (gh_cma_pos < gh_cma_total) {
++		u32 bidx = gh_scan_cma[gh_cma_pos++];
++
++		gh_cma_rr_cursor = bidx;		/* success or fail: rotate */
++		if (gh_slot_at(bidx)->state == GH_CMA)
++			return bidx;
++	}
++	return GH_NIL;
++}
++
++int gh_pool_cma_to_avail(int n)
++{
++	unsigned long fl;
++	int got = 0, tried = 0;
++
++	while (got < n && tried < n) {
++		u32 bidx = gh_cma_scan_pop(), i;
++		unsigned long base;
++
++		if (bidx == GH_NIL)
++			break;
++		tried++;
++		base = gh_pfn_of_idx(bidx);
++		if (gh_kapi.contig_range_cma(base,
++				base + ((unsigned long)GH_S << GH_PAGE_ORDER)) != 0)
++			continue;			/* SKIP_THIS_SCAN */
++		gh_label_block(bidx, 1 /* MOVABLE */);
++		for (i = 0; i < GH_S; i++) {
++			unsigned long sub = base + ((unsigned long)i << GH_PAGE_ORDER);
++
++			gh_rebuild_order9(pfn_to_page(sub));
++			gh_spin_lock(&gh_pool_lock, &fl);
++			if (!gh_avail_in(sub, GH_CMA, GH_IN_CMA)) {
++				gh_spin_unlock(&gh_pool_lock, &fl);
++				__free_pages(pfn_to_page(sub), GH_PAGE_ORDER);
++				continue;
++			}
++			gh_spin_unlock(&gh_pool_lock, &fl);
++		}
++		got++;
++	}
++	return got;
++}
++
++int gh_pool_cma_to_ext(int n)
++{
++	unsigned long fl;
++	int got = 0, tried = 0;
++
++	while (got < n && tried < n) {
++		u32 bidx = gh_cma_scan_pop(), i;
++		unsigned long base;
++
++		if (bidx == GH_NIL)
++			break;
++		tried++;
++		base = gh_pfn_of_idx(bidx);
++		if (gh_kapi.contig_range_cma(base,
++				base + ((unsigned long)GH_S << GH_PAGE_ORDER)) != 0)
++			continue;			/* stuck: stays CMA, keeps counting */
++		gh_label_block(bidx, 1 /* MOVABLE */);
++		gh_spin_lock(&gh_pool_lock, &fl);
++		for (i = 0; i < GH_S; i++)
++			gh_set_state(gh_slot_at(bidx + i), GH_EXT);
++		gh_spin_unlock(&gh_pool_lock, &fl);
++		for (i = 0; i < GH_S; i++) {
++			unsigned long sub = base + ((unsigned long)i << GH_PAGE_ORDER);
++
++			gh_rebuild_order9(pfn_to_page(sub));
++			__free_pages(pfn_to_page(sub), GH_PAGE_ORDER);
++		}
++		got++;
++	}
++	return got;
++}
++
++/* ── cma parameter verification (§3.2 pool_verify_cma_params) ── */
++enum gh_verify_result gh_pool_verify_cma_params(void)
++{
++	unsigned long fl;
++	u32 span, base = GH_NIL, i;
++	unsigned long p0, pre0, pre2, delta_before;
++	int a, b;
++
++	if (gh_cma_params == GH_CMA_VERIFIED)
++		return GH_VERIFY_OK;
++	if (gh_cma_params == GH_CMA_UNAVAILABLE)
++		return GH_VERIFY_FAILED;
++
++	/* window: 2 believed blocks + guard out to the largest supported
++	 * order's block, fully AVAIL, aligned (§3.2: never touch unheld) */
++	span = 2 * GH_S;
++	if (span < (1u << (GH_CMA_ORDER_MAX - GH_PAGE_ORDER)))
++		span = 1u << (GH_CMA_ORDER_MAX - GH_PAGE_ORDER);
++	gh_spin_lock(&gh_pool_lock, &fl);
++	for (i = 0; i + span <= gh_span_slots; i += span) {
++		u32 k;
++		bool ok = true;
++
++		for (k = 0; k < span; k++) {
++			struct gh_slot *s = gh_slot_at(i + k);
++
++			if (!s || s->state != GH_AVAIL) { ok = false; break; }
++		}
++		if (ok) { base = i; break; }
++	}
++	if (base == GH_NIL) {
++		gh_spin_unlock(&gh_pool_lock, &fl);
++		return GH_VERIFY_DEFERRED;		/* no safe window this run */
++	}
++	for (i = 0; i < span; i += GH_S) {		/* hold: AVAIL -> VERIFY, per block */
++		enum gh_class c = gh_classify(base + i);	/* all S cells share this list */
++		u32 j;
++
++		for (j = 0; j < GH_S; j++) {
++			gh_slist_unlink(&gh_avail[c], base + i + j);
++			gh_set_state(gh_slot_at(base + i + j), GH_VERIFY);
++		}
++	}
++	gh_spin_unlock(&gh_pool_lock, &fl);
++
++	p0 = gh_pfn_of_idx(base);
++	pre0 = gh_kapi.get_pfnblock_mt(p0);
++	pre2 = gh_kapi.get_pfnblock_mt(p0 + ((unsigned long)GH_S << GH_PAGE_ORDER));
++	if (pre0 > 2 || pre2 > 2)
++		goto restore_deferred;			/* not flippable labels: retry later */
++
++	gh_label_block(base, gh_migrate_cma);		/* flip "first believed block" */
++	a = (int)gh_kapi.get_pfnblock_mt(p0 + ((unsigned long)GH_S << GH_PAGE_ORDER) - 1);
++	b = (int)gh_kapi.get_pfnblock_mt(p0 + ((unsigned long)GH_S << GH_PAGE_ORDER));
++	if (a != gh_migrate_cma || b != (int)pre2) {	/* boundary reads: off-by-one */
++		gh_pr_warn("cma verify: pageblock order belief wrong (a=%d b=%d)\n", a, b);
++		gh_label_block(base, (int)pre0);
++		goto fail;
++	}
++	/* semantic: +2MB free into the flipped block must move CmaFree ~+512 */
++	delta_before = gh_kapi.cma_free_pages();
++	gh_free_to_cma(p0);
++	if (gh_kapi.drain_pages)
++		gh_kapi.drain_pages();		/* order-9 free pcp-transits (THP order);
++						 * drain so NR_FREE_CMA_PAGES and the
++						 * grab-back below see it in buddy */
++	if (gh_kapi.cma_free_pages() - delta_before < 384) {
++		gh_kapi.contig_range_cma(p0, p0 + GH_PAGES_PER_SLOT);
++		gh_label_block(base, (int)pre0);
++		if (++gh_cma_verify_misses < GH_CMA_VERIFY_MISS_MAX) {
++			gh_pr_info("cma verify: CmaFree delta too small (attempt %d/%d) — retrying\n",
++				   gh_cma_verify_misses, GH_CMA_VERIFY_MISS_MAX);
++			goto retry_deferred;		/* transient (pcp/vmstat lag) */
++		}
++		gh_pr_warn("cma verify: CmaFree delta too small after %d attempts\n",
++			   gh_cma_verify_misses);
++		goto fail;				/* persistent — CMA unobservable */
++	}
++	/* end-to-end CMA-mode grab-back of exactly what was freed */
++	if (gh_kapi.contig_range_cma(p0, p0 + GH_PAGES_PER_SLOT) != 0) {
++		gh_pr_warn("cma verify: CMA-mode grab-back failed\n");
++		gh_label_block(base, (int)pre0);
++		goto fail;
++	}
++	gh_label_block(base, (int)pre0);		/* restore, whole window intact */
++	gh_spin_lock(&gh_pool_lock, &fl);
++	for (i = 0; i < span; i++) {
++		gh_rebuild_order9(pfn_to_page(gh_pfn_of_idx(base + i)));
++		gh_avail_in(gh_pfn_of_idx(base + i), GH_VERIFY, GH_ORIGIN_MAX);
++	}
++	gh_cma_params = GH_CMA_VERIFIED;
++	gh_spin_unlock(&gh_pool_lock, &fl);
++	gh_pr_info("cma verify: VERIFIED — movable->CMA reservoir enabled\n");
++	return GH_VERIFY_OK;
++
++restore_deferred:
++	gh_spin_lock(&gh_pool_lock, &fl);
++	for (i = 0; i < span; i++)
++		gh_avail_in(gh_pfn_of_idx(base + i), GH_VERIFY, GH_ORIGIN_MAX);
++	gh_spin_unlock(&gh_pool_lock, &fl);
++	return GH_VERIFY_DEFERRED;
++
++retry_deferred:	/* transient probe miss: rebuild the touched compounds, stay PENDING */
++	gh_spin_lock(&gh_pool_lock, &fl);
++	for (i = 0; i < span; i++) {
++		gh_rebuild_order9(pfn_to_page(gh_pfn_of_idx(base + i)));
++		gh_avail_in(gh_pfn_of_idx(base + i), GH_VERIFY, GH_ORIGIN_MAX);
++	}
++	gh_spin_unlock(&gh_pool_lock, &fl);
++	return GH_VERIFY_DEFERRED;
++
++fail:
++	gh_spin_lock(&gh_pool_lock, &fl);
++	for (i = 0; i < span; i++) {
++		gh_rebuild_order9(pfn_to_page(gh_pfn_of_idx(base + i)));
++		gh_avail_in(gh_pfn_of_idx(base + i), GH_VERIFY, GH_ORIGIN_MAX);
++	}
++	gh_cma_params = GH_CMA_UNAVAILABLE;		/* boot constant: no retry */
++	gh_pool_want_with_cma = 0;
++	if (gh_pool_total > gh_pool_want)
++		gh_pool_total = gh_pool_want;
++	gh_spin_unlock(&gh_pool_lock, &fl);
++	gh_pr_warn("cma verify: UNAVAILABLE — running pure-pool (no CMA reservoir)\n");
++	return GH_VERIFY_FAILED;
++}
++
++/* ── snapshots (§10: sysfs never mixes generations) ────── */
++void gh_pool_stats_snapshot(struct gh_pool_stats *o)
++{
++	unsigned long fl;
++	int i;
++
++	gh_spin_lock(&gh_pool_lock, &fl);
++	o->want = gh_pool_want; o->want_cma = gh_pool_want_with_cma;
++	o->size_max = gh_pool_size_max; o->total = gh_pool_total;
++	o->avail = gh_pool_avail();
++	o->served = (int)gh_nstate[GH_SERVED];
++	o->released = (int)gh_nstate[GH_RELEASED];
++	o->verify = (int)gh_nstate[GH_VERIFY];
++	o->cma = (int)gh_nstate[GH_CMA];
++	o->ext = (int)gh_nstate[GH_EXT];
++	o->avail_non = gh_avail[GH_L_NON].n;
++	o->avail_able = gh_avail[GH_L_ABLE].n;
++	o->avail_ready = gh_avail[GH_L_READY].n;
++	o->cma_params = gh_cma_params;
++	o->reject = gh_dbg_reject; o->orphan = gh_dbg_orphan;
++	o->gate_drop = gh_dbg_gate_drop; o->purged = gh_dbg_purged;
++	for (i = 0; i < GH_ORIGIN_MAX; i++)
++		o->origin[i] = gh_dbg_origin[i];
++	gh_spin_unlock(&gh_pool_lock, &fl);
++}
++
++void gh_pool_owner_stats_snapshot(struct gh_owner_stats *o)
++{
++	int i;
++
++	o->n = 0;
++	o->live_served = 0;
++	gh_read_lock(&gh_pid_lock);
++	for (i = 0; i < GH_VM_OWNER_MAX; i++) {
++		struct gh_owner *w = &gh_owners[i];
++
++		if (!w->mm)
++			continue;
++		/* served/abandoned: pool-lock CTR writers, we hold only
++		 * pid_lock — annotated reads (report values, racy by design) */
++		if (w->vm_count > 0)
++			o->live_served += GH_READ_ONCE(w->served);
++		o->row[o->n].tgid = w->tgid;
++		gh_strscpy(o->row[o->n].comm, w->comm, GH_COMM_LEN);
++		o->row[o->n].vm_count = w->vm_count;
++		o->row[o->n].dead = w->dead;
++		o->row[o->n].served = GH_READ_ONCE(w->served);
++		o->row[o->n].abandoned = GH_READ_ONCE(w->abandoned);
++		o->n++;
++	}
++	gh_read_unlock(&gh_pid_lock);
++}
++
++/* config: preflight results land here (insmod, §8; harness world_reset) */
++void gh_pool_set_cma_config(int cma_order, int migrate_cma_val)
++{
++	gh_cma_order = cma_order;
++	gh_migrate_cma = migrate_cma_val;
++	gh_cma_params = (migrate_cma_val >= 0 &&
++			 cma_order >= GH_PAGE_ORDER && cma_order <= GH_CMA_ORDER_MAX)
++			? GH_CMA_PENDING : GH_CMA_UNAVAILABLE;
++}
++
++void gh_pool_teardown_table(void)		/* rmmod: free everything (§8) */
++{
++	u32 g;
++
++	for (g = 0; g < gh_span_slots / GH_SLOTS_PER_GB; g++)
++		if (gh_top[g]) { gh_free(gh_top[g]); gh_top[g] = NULL; }
++	gh_free(gh_scan_main); gh_free(gh_scan_precise); gh_free(gh_scan_cma);
++	gh_scan_main = gh_scan_precise = gh_scan_cma = NULL;
++}
++
++/* ── init-time carveout marking (§8): vendor CMA areas + ZONE_MOVABLE ── */
++/* Single-threaded init context (no serve/hook yet), so no lock needed for the
++ * walk; page/zone judgment goes through kapi (§3.3). A 2MB window is refused
++ * if ANY of its pages is ZONE_MOVABLE, or its pageblock is already CMA-labeled
++ * (someone else's carveout — we have flipped nothing yet). */
++void gh_pool_mark_carveouts(int migrate_cma_val)
++{
++	u32 idx;
++
++	for (idx = 0; idx < gh_span_slots; idx++) {
++		struct gh_slot *s = gh_slot_at(idx);
++		unsigned long pfn = gh_pfn_of_idx(idx);
++		bool bad = false;
++		unsigned long p;
++
++		if (!s || s->state != GH_EXT)
++			continue;
++		if (migrate_cma_val >= 0 && gh_kapi.get_pfnblock_mt &&
++		    (int)gh_kapi.get_pfnblock_mt(pfn) == migrate_cma_val)
++			bad = true;
++		if (!bad && gh_kapi.in_zone_movable)
++			for (p = pfn; p < pfn + GH_PAGES_PER_SLOT; p += GH_PAGES_PER_SLOT)
++				if (gh_kapi.in_zone_movable(p)) {
++					bad = true;
++					break;
++				}
++		if (bad)
++			gh_set_state(s, GH_NOT_USEABLE);
++	}
++}
++
++/* ── reporting accessors (sysfs; §10) ─────────────────── */
++void gh_pool_purge_log_snapshot(struct gh_purge_log *o)
++{
++	unsigned long fl;
++	unsigned int i, first;
++
++	gh_spin_lock(&gh_pool_lock, &fl);
++	o->total = gh_purge_log_n;
++	first = gh_purge_log_n > GH_PURGE_LOG_MAX ?
++		gh_purge_log_n - GH_PURGE_LOG_MAX : 0;
++	o->n = 0;
++	for (i = first; i < gh_purge_log_n; i++)
++		o->rec[o->n++] = gh_purge_log[i % GH_PURGE_LOG_MAX];
++	gh_spin_unlock(&gh_pool_lock, &fl);
++}
++
++/* base pfns of the blocks currently ours-and-CMA (for cma_usage). Returns
++ * count; caller sizes @out to the reservoir bound. */
++int gh_pool_cma_block_bases(unsigned long *out, int max)
++{
++	unsigned long fl;
++	u32 bidx;
++	int n = 0;
++
++	gh_spin_lock(&gh_pool_lock, &fl);
++	for (bidx = 0; bidx < gh_span_slots && n < max; bidx += GH_S) {
++		struct gh_slot *s = gh_slot_at(bidx);
++
++		if (s && s->state == GH_CMA)
++			out[n++] = gh_pfn_of_idx(bidx);
++	}
++	gh_spin_unlock(&gh_pool_lock, &fl);
++	return n;
++}
++int gh_pool_cma_block_span(void) { return (int)GH_S << GH_PAGE_ORDER; }
+--- /dev/null
++++ b/drivers/virt/gunyah/reserve-core/upstream.json
+@@ -0,0 +1,12 @@
++{
++  "repository": "https://github.com/Droid-VM/gh-hugepage-reserve",
++  "commit": "e15c40d600dd19b2c5bcb220a92f7359c9ee0846",
++  "license": "GPL-2.0",
++  "files_sha256": {
++    "gh_kernel_env.h": "d40cbad52a827b997e8acf9f14cd78d5b9d0a96d3fd9c3cc2f9a202c23492fc5",
++    "gh_defs.h": "e2b7269671faf1100d4a4c5f598be5b7d3b0ad124c1de539a223b29a648cca43",
++    "LICENSE.txt": "aaf135472f81c5b4a0dca9367e5bb5e9750032b5bebe5442b36e4c0a47430df3",
++    "gh_pool.c.inc": "eeeca2d1d6198a1ffbbfd79acbda2c10895d1987a639c57b138253b5e5e592ac",
++    "gh_owner.c.inc": "9d975a9a7c7ea653a35388201591cf1e78ee55bde3902677fafcba6ce68fd4e3"
++  }
++}

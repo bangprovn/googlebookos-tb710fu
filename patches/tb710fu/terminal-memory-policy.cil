@@ -1,0 +1,4 @@
+; Owner diagnostic init actions use only the fixed shmem_enabled sysfs path.
+; The platform already allows init to open/read this type. Permit only the
+; missing write permission; no shell/app grant, new type or permissive domain.
+(allow init sysfs_transparent_hugepage (file (write)))

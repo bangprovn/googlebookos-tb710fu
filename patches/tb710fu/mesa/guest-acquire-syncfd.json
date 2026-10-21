@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "scope": "Opt-in native WSI acquire fence backport to exact Debian Mesa 25.0.7; no persistent installation",
+  "source_version": "25.0.7-2+deb13u1",
+  "license": "MIT; original Mesa headers retained",
+  "base_file": "src/virtio/vulkan/vn_wsi.c",
+  "base_sha256": "3911e76e0b344980bbbc79eb86611a7cd15563325335dfe47530b8284b7c4dbb",
+  "result_sha256": "fd05485569c8681de4069aa4fb7b2d5c30fa228d47826e1254cc5f9651fb11f5",
+  "patch_sha256": "e5baca5e3ffc6817e21d9eab695c8d30900c95ad56faf86851493d665ddc10e7",
+  "header": "patches/tb710fu/mesa/gb-wsi-acquire-fd.h",
+  "header_sha256": "586a7626181a0848cc2471903fa5d50d8f4aac7396cd95feb3ff16e3db5a6773",
+  "opt_in": {
+    "GB_VENUS_ACQUIRE_FENCE_V1": "syncfd"
+  },
+  "upstream_references": [
+    "849e3552e8051d8fcc727e1f97be5e5e24210fc0",
+    "211c21725ce27cd7c2ac17114395cb74b55d3018"
+  ],
+  "prime_copy_path_preserved": true,
+  "descriptor_export_failures_are_errors": true,
+  "installed": false,
+  "runtime_verified": false,
+  "presentation_verified": false,
+  "status": "experimental_native_presentation_failure_retained",
+  "runtime_executed": true,
+  "native_compositor_syncfd_import_observed": true,
+  "candidate_library_sha256": "bb634ea83a96def2c2ea4e2ef6f6b1edf64977dd40fff95570e4d51983e53a71",
+  "runtime_report": "docs/tb710fu-image-sharing-20261020.json"
+}

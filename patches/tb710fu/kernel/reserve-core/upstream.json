@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/Droid-VM/gh-hugepage-reserve",
+  "commit": "e15c40d600dd19b2c5bcb220a92f7359c9ee0846",
+  "license": "GPL-2.0",
+  "files_sha256": {
+    "gh_kernel_env.h": "d40cbad52a827b997e8acf9f14cd78d5b9d0a96d3fd9c3cc2f9a202c23492fc5",
+    "gh_defs.h": "e2b7269671faf1100d4a4c5f598be5b7d3b0ad124c1de539a223b29a648cca43",
+    "LICENSE.txt": "aaf135472f81c5b4a0dca9367e5bb5e9750032b5bebe5442b36e4c0a47430df3",
+    "gh_pool.c.inc": "eeeca2d1d6198a1ffbbfd79acbda2c10895d1987a639c57b138253b5e5e592ac",
+    "gh_owner.c.inc": "9d975a9a7c7ea653a35388201591cf1e78ee55bde3902677fafcba6ce68fd4e3"
+  }
+}

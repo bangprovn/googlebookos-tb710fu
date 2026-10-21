@@ -1,0 +1,51 @@
+--- a/src/vulkan/wsi/wsi_common_drm.c
++++ b/src/vulkan/wsi/wsi_common_drm.c
+@@ -683,13 +683,35 @@
+       .image = image->image,
+       .buffer = VK_NULL_HANDLE,
+    };
+-   const VkMemoryAllocateInfo memory_info = {
++   VkMemoryAllocateInfo memory_info = {
+       .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+       .pNext = &memory_dedicated_info,
+       .allocationSize = reqs.size,
+       .memoryTypeIndex =
+          wsi_select_device_memory_type(wsi, reqs.memoryTypeBits),
+    };
++   const char *gb_memory_mode = getenv("GB_VENUS_WSI_MEMORY_V1");
++   if (gb_memory_mode && !strcmp(gb_memory_mode, "coherent")) {
++      const VkMemoryPropertyFlags required = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
++                                             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
++      const uint32_t default_type = memory_info.memoryTypeIndex;
++      bool found = false;
++      for (uint32_t i = 0; i < wsi->memory_props.memoryTypeCount; i++) {
++         if ((reqs.memoryTypeBits & (1u << i)) &&
++             (wsi->memory_props.memoryTypes[i].propertyFlags & required) == required) {
++            memory_info.memoryTypeIndex = i;
++            found = true;
++            break;
++         }
++      }
++      if (!found)
++         return VK_ERROR_FEATURE_NOT_PRESENT;
++      fprintf(stderr, "GB-WSI-MEMORY: coherent native default_type=%u default_flags=%u selected_type=%u flags=%u bytes=%llu\n",
++              default_type, wsi->memory_props.memoryTypes[default_type].propertyFlags,
++              memory_info.memoryTypeIndex,
++              wsi->memory_props.memoryTypes[memory_info.memoryTypeIndex].propertyFlags,
++              (unsigned long long)reqs.size);
++   }
+    result = wsi->AllocateMemory(chain->device, &memory_info,
+                                 &chain->alloc, &image->memory);
+    if (result != VK_SUCCESS)
+@@ -744,6 +766,11 @@
+       image->sizes[0] = reqs.size;
+       image->row_pitches[0] = image_layout.rowPitch;
+       image->offsets[0] = 0;
++      if (gb_memory_mode && !strcmp(gb_memory_mode, "coherent"))
++         fprintf(stderr, "GB-WSI-MEMORY: native layout pitch=%llu actual_offset=%llu published_offset=%llu\n",
++                 (unsigned long long)image_layout.rowPitch,
++                 (unsigned long long)image_layout.offset,
++                 (unsigned long long)image->offsets[0]);
+    }
+ 
+    return VK_SUCCESS;

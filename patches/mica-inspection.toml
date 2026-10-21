@@ -1,0 +1,39 @@
+schema_version = 1
+id = "mica-read-only-boot-extraction"
+revision = 1
+publish = ["boot_a.img", "vendor_boot_a.img", "init_boot_a.img", "vbmeta_a.img"]
+
+[[operations]]
+kind = "extract_zip_member"
+source = "donor"
+member = "android-desktop_signed_recovery_image.bin"
+output = "mica.raw"
+sha256 = "b0fd614ffe1a088fa3451a4b81c55a73f83e246286184a46ca306250db9af1f1"
+
+[[operations]]
+kind = "extract_gpt_partition"
+source = "build"
+input = "mica.raw"
+partition = "boot_a"
+output = "boot_a.img"
+
+[[operations]]
+kind = "extract_gpt_partition"
+source = "build"
+input = "mica.raw"
+partition = "vendor_boot_a"
+output = "vendor_boot_a.img"
+
+[[operations]]
+kind = "extract_gpt_partition"
+source = "build"
+input = "mica.raw"
+partition = "init_boot_a"
+output = "init_boot_a.img"
+
+[[operations]]
+kind = "extract_gpt_partition"
+source = "build"
+input = "mica.raw"
+partition = "vbmeta_a"
+output = "vbmeta_a.img"

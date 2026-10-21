@@ -1,0 +1,172 @@
+{
+  "schema_version": 1,
+  "revision": 1,
+  "state": "host_model_not_production",
+  "scope": "Actual donor method counterexamples under controlled stand-ins, plus separate ownership repair MODEL; no APK instrumentation/production patch/install",
+  "installed_apk_sha256": "8bbea541e6f45f8cf530eb78d9b50830113458a6e4220a5e4de9966d0fae5372",
+  "apk_path": "artifacts/device/first-boot-20261013/terminal-investigation-20261018-v1/validation-v73-terminal-workload/donor-terminal.apk",
+  "source_inputs": {
+    "artifacts/device/first-boot-20261013/terminal-investigation-20261018-v1/decompiled-vm-controller-v2/sources/com/android/virtualization/terminal/new2/core/VmController.java": "b7cc6650cf6a1b7241efd95c95d89670a85caff9c59b01174028b724d812b276",
+    "artifacts/device/first-boot-20261013/terminal-investigation-20261018-v1/validation-v73-terminal-workload/donor-terminal.apk": "8bbea541e6f45f8cf530eb78d9b50830113458a6e4220a5e4de9966d0fae5372",
+    "artifacts/source/crosvm-android16qpr2-backend/packages/modules/Virtualization/libs/framework-virtualization/src/android/system/virtualmachine/VirtualMachine.java": "d8b8f4360f40264691d097183b1df681e281856b6197e5a52b439c3ee0801087",
+    "artifacts/source/crosvm-android16qpr2-backend/packages/modules/Virtualization/android/virtmgr/src/crosvm.rs": "7cf48278053ab16aef1725b1b93b7197cbc2bc91674b679b327f3f13466d4f9c",
+    "artifacts/device/first-boot-20261013/terminal-investigation-20261018-v1/backend-fix-v16-init-diagnosis/framework-virtualization.jar": "f29c626f387741ce3e58d735276db33d22a055ecd1ba8e3b4963d0ca6e7b49ad",
+    "artifacts/device/first-boot-20261013/terminal-investigation-20261018-v1/backend-fix-v16-init-diagnosis/decompiled-vm-runtime/sources/android/system/virtualmachine/VirtualMachine.java": "f8b5caaf3289d92a9ab465bcf3117682b7ce192c207fbe4fa170182d9b0423e5",
+    "artifacts/device/first-boot-20261013/guest-native-backing-budget-20261020-v1/idle-exit-v1/installed-framework-binding.json": "9bd4655f9062401bbf9e73b4a8897e0b834ae4d487fbf38a91012ff93a73b45d"
+  },
+  "actual_methods": [
+    {
+      "class": "com.android.virtualization.terminal.new2.core.VmService",
+      "output": "VmService.java",
+      "signature": "public final void checkStopSelf()",
+      "sha256": "da10ced1deb0cc7e519c1b8647df2a3109d285161f3d22e23629004a6f8541c6",
+      "marker": "// ACTUAL_SERVICE_GATE"
+    },
+    {
+      "class": "com.android.virtualization.terminal.new2.core.VmState",
+      "output": "VmState.java",
+      "signature": "default boolean isAlive()",
+      "sha256": "7848ca166af3ebee780630f665aad1f46047f416b3cbcc4d527c455b4c2ec9c9",
+      "marker": "// ACTUAL_ALIVE_GATE"
+    },
+    {
+      "source_path": "artifacts/device/first-boot-20261013/terminal-investigation-20261018-v1/decompiled-vm-controller-v2/sources/com/android/virtualization/terminal/new2/core/VmController.java",
+      "signature": "public final void start(String customConfigPath)",
+      "sha256": "2e1b79803da822167c3bce8bef84ba00bffdeb771dac77b7a48973603a6e086d",
+      "marker": "// ACTUAL_START"
+    },
+    {
+      "source_path": "artifacts/device/first-boot-20261013/terminal-investigation-20261018-v1/decompiled-vm-controller-v2/sources/com/android/virtualization/terminal/new2/core/VmController.java",
+      "signature": "public final void reset()",
+      "sha256": "e34f846683233ddf174e6db9d8ebec1646253ce9c3be64d832fcfe2e1393c7a2",
+      "marker": "// ACTUAL_RESET"
+    },
+    {
+      "class": "android.system.virtualmachine.VirtualMachine",
+      "input_path": "artifacts/device/first-boot-20261013/terminal-investigation-20261018-v1/backend-fix-v16-init-diagnosis/framework-virtualization.jar",
+      "derived_source_path": "artifacts/device/first-boot-20261013/terminal-investigation-20261018-v1/backend-fix-v16-init-diagnosis/decompiled-vm-runtime/sources/android/system/virtualmachine/VirtualMachine.java",
+      "output": "VirtualMachine.java",
+      "signature": "public int getStatus()",
+      "sha256": "701a5df8be8cd27249cba55c340d244728ae617a9bdd93a41c0a0e62a6c3f1e7",
+      "marker": "// ACTUAL_FRAMEWORK_STATUS"
+    },
+    {
+      "class": "android.system.virtualmachine.VirtualMachine",
+      "input_path": "artifacts/device/first-boot-20261013/terminal-investigation-20261018-v1/backend-fix-v16-init-diagnosis/framework-virtualization.jar",
+      "derived_source_path": "artifacts/device/first-boot-20261013/terminal-investigation-20261018-v1/backend-fix-v16-init-diagnosis/decompiled-vm-runtime/sources/android/system/virtualmachine/VirtualMachine.java",
+      "output": "VirtualMachine.java",
+      "signature": "private int stateToStatus(int state)",
+      "sha256": "c5577e3a29a63aded80282f69943d39e03ec4892fdc31148146d6b20906c0e1f",
+      "marker": "// ACTUAL_FRAMEWORK_STATE_TO_STATUS"
+    },
+    {
+      "class": "android.system.virtualmachine.VirtualMachine",
+      "input_path": "artifacts/device/first-boot-20261013/terminal-investigation-20261018-v1/backend-fix-v16-init-diagnosis/framework-virtualization.jar",
+      "derived_source_path": "artifacts/device/first-boot-20261013/terminal-investigation-20261018-v1/backend-fix-v16-init-diagnosis/decompiled-vm-runtime/sources/android/system/virtualmachine/VirtualMachine.java",
+      "output": "VirtualMachine.java",
+      "signature": "public void stop() throws VirtualMachineException",
+      "sha256": "78735032c4247accff8b2b34b25f2bc465c88d1f9008d7f7a919fe4bed729fa0",
+      "marker": "// ACTUAL_FRAMEWORK_STOP"
+    }
+  ],
+  "decompiler": {
+    "jar": "artifacts/tools/jadx-1.5.6/lib/jadx-1.5.6-all.jar",
+    "sha256": "fe3e12c45acf75f92369685fd02d1d7a7323385dc725680a9b98a0dac0ea554b",
+    "sandbox_image": "sha256:a3a951af78a89cb1a771c97cc70c7573663f751a444d728ed9048c1f20ab40c5",
+    "network": false,
+    "source_readonly": true,
+    "unprivileged": true,
+    "class_timeout_seconds": 55,
+    "memory_bytes": 1073741824,
+    "pids_limit": 128,
+    "cpus": 2
+  },
+  "opt_in": {
+    "GB_TERMINAL_LIFECYCLE_MODEL_V1": "owned-state-only-v1"
+  },
+  "maximum_state_records_per_case": 32,
+  "maximum_stdout_bytes": 32768,
+  "production_fix_implemented": false,
+  "apk_instrumented": false,
+  "installed": false,
+  "runtime_verified": false,
+  "previous_exit_explained": false,
+  "host_validation": {
+    "state": "passed",
+    "command": "PYTHONDONTWRITEBYTECODE=1 python3 tests/terminal_lifecycle_ownership.py -v",
+    "tests_passed": 5,
+    "fixed_scenarios": 13,
+    "unchanged_donor_method_bodies_verified": 7,
+    "javac_flags": [
+      "-Xlint:all",
+      "-Werror"
+    ],
+    "last_duration_seconds": 29.406,
+    "java_executed": "Temporary host stand-ins plus reconstructed methods, not Android binaries",
+    "fresh_offline_class_parses": 3,
+    "source_counterexample_scenarios": 7,
+    "separate_repair_model_scenarios": 6,
+    "apk_or_jar_binaries_executed": false,
+    "selected_reconstructed_method_bodies_executed_in_host_harness": true
+  },
+  "host_inputs": {
+    "tests/terminal_lifecycle_ownership.py": "d9d99bc63bf031b0a566c2c68ebb0b134fc8e96705a6cea624ccfb249a08aa7f",
+    "tests/fixtures/terminal_lifecycle_ownership.java": "49125f3ef7cf641971c99f3f02ebbc09065b9a1ed238d1d898e9b9458a7ba819"
+  },
+  "checked_at_utc": "2026-10-20T13:08:27.557572+00:00",
+  "maximum_final_summary_records_per_case": 1,
+  "bounded_model_generations": 64,
+  "native_reference": {
+    "repository_revision": "862c6af544ce4ca89e5dc8f1aca10a832367d77f",
+    "installed_donor_framework_equivalence_verified": false,
+    "getStatus_fact": "VirtualMachine.java:808-829 catches RemoteException and returns STATUS_STOPPED; raw STOPPED is not independent proof of exact native owner release. Caller-side exception handling cannot recover this suppressed failure.",
+    "stop_fact": "VirtualMachine.stop is blocking and only drops binding after binder stop returns; native kill has a five-second condition wait followed by unbounded exit/tracing joins, and concurrent shutdown may wait without a deadline.",
+    "model_policy": "Raw STOPPED, binder failure and unconfirmed status preserve ownership as UNKNOWN. Only separately trusted exact-owner stop confirmation or verified pending-without-native settlement releases lease. No such independent production confirmation API is implemented here.",
+    "scope": "Separate AOSP reference for lower-layer shutdown behavior, not installed donor byte equivalence. Exact donor Java behavior is pinned separately and differs on stop failures."
+  },
+  "model_semantics": {
+    "serialized_pending_claim_before_service_exposure": true,
+    "native_creation_requires_current_generation_foreground_ack": true,
+    "foreground_ack_is_generation_bound": true,
+    "pending_cancellation_keeps_lease_until_settled": true,
+    "recoverable_ui_error_retains_owned_vm_foreground_lease": true,
+    "fatal_stop_requests_per_generation_max": 1,
+    "stop_deadline_retains_blocked_unknown_ownership": true,
+    "reset_and_new_start_refused_while_pending_owned_or_blocked": true,
+    "old_generation_status_error_foreground_ack_and_stop_callbacks_ignored": true,
+    "no_timer_thread_android_service_binder_or_native_process": true,
+    "raw_stopped_status_is_unknown_without_trusted_stop_confirmation": true
+  },
+  "source_counterexamples": [
+    "Source-permitted service-first Ready/start ordering stops service before separately modeled worker creates native VM.",
+    "Worker-first interleaving keeps coverage; failure is not claimed inevitable.",
+    "Source-constrained late Error publication plus actual checkStopSelf and actual reset retain dummy native reference with no service.",
+    "Actual start returns before service reconciliation when already Running.",
+    "Actual donor getStatus hides modeled remote failure as STOPPED; stop based on that ambiguous status throws and drops binding; fake native remains alive only with modeled cleanup stop failure too.",
+    "Actual donor stop drops binding after modeled native stop and subsequent cleaner stop both fail; successful native stop separately completes and drops binding."
+  ],
+  "licensing_scope": "Own host stand-ins/model are Apache-2.0. Donor method bodies are extracted only into temporary local test output; no donor class or APK is bundled by these candidate files. Donor licensing/signing authority is not inferred from older AOSP. Pinned AOSP reference files retain their existing notices and are not redistributed here.",
+  "limitations": [
+    "This is an executable host contract/model, not a production APK patch, instrumentation, Android lifecycle test or runtime fix.",
+    "Seven simple reconstructed donor methods compile unchanged against explicit stand-ins. Android scheduling, coroutine execution, service promotion and native VM are modeled. Error transition is constrained by pinned source text, not a compilable production callback.",
+    "No matching donor new2 Kotlin checkout, platform signing integration or independent native-stop confirmation mechanism is supplied.",
+    "Current installed APK byte equivalence was established by main lane; this test verifies only saved inputs. Source counterexamples do not establish which path, if any, caused prior cached-parent exit.",
+    "Pending-start settlement, generation serialization, native-create admission and trusted stop confirmation are required production contracts, not APIs added to current donor app.",
+    "Model never disables CPU policy, claims low CPU, invents cleanup on timeout, grants a permanent FGS exemption or solves sustained child CPU.",
+    "No production/native build, APK repack/sign/install or device operation was performed.",
+    "Model foreground acknowledgement and exact-owner confirmation are trusted inputs; it does not simulate every Android policy action or process death after acknowledgement."
+  ],
+  "installed_donor_framework": {
+    "jar_path": "artifacts/device/first-boot-20261013/terminal-investigation-20261018-v1/backend-fix-v16-init-diagnosis/framework-virtualization.jar",
+    "jar_sha256": "f29c626f387741ce3e58d735276db33d22a055ecd1ba8e3b4963d0ca6e7b49ad",
+    "derived_source_path": "artifacts/device/first-boot-20261013/terminal-investigation-20261018-v1/backend-fix-v16-init-diagnosis/decompiled-vm-runtime/sources/android/system/virtualmachine/VirtualMachine.java",
+    "derived_source_sha256": "f8b5caaf3289d92a9ab465bcf3117682b7ce192c207fbe4fa170182d9b0423e5",
+    "binding_receipt": "artifacts/device/first-boot-20261013/guest-native-backing-budget-20261020-v1/idle-exit-v1/installed-framework-binding.json",
+    "installed_byte_equivalence_verified_by_main": true,
+    "status_fact": "Actual getStatus547-571 catches RemoteException ->STATUS_STOPPED0; stateToStatus maps unknown native states to0.",
+    "stop_fact": "Actual stop1759-1777 drops VM binding on success AND in catch(Throwable) before rethrow; failed native stop can leave native alive while Java binding is cleared.",
+    "callback_fact": "Actual handleStopped608-617 verifies CID and deduplicates before dropVm; lower-layer native completion/ownership still requires proof.",
+    "host_fake_native_scope": "Actual three donor methods compile unchanged; native calls and dropVm/DeathAction cleanup are explicit stand-ins. Cleanup stand-in attempts captured native stop once and suppresses modeled remote failure, constrained by pinned actual method text. No Android code/native process executes.",
+    "cleanup_fact": "dropVm620-657 clears binding then mCleanable.clean; DeathAction.run1849-1870 attempts stop on captured native owner and suppresses Exception. Fault tests model this once-only cleanup and make that native stop fail too; they do not claim every thrown stop leaves native alive."
+  }
+}

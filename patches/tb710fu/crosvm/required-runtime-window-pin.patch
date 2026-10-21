@@ -1,0 +1,99 @@
+--- a/hypervisor/src/gunyah/mod.rs
++++ b/hypervisor/src/gunyah/mod.rs
+@@ -397,6 +397,8 @@
+     /// Long-term pins held over runtime-shared blobs between the SHARE ioctl and the guest's
+     /// accept, keyed by the same label as `blob_regions`. See `pin.rs`.
+     blob_pins: Arc<Mutex<BTreeMap<u32, pin::LongtermPin>>>,
++    /// Whole runtime RAM pinned before the first firmware transfer; shared by VM clones.
++    guest_ram_pin: Arc<Option<pin::LongtermPin>>,
+     routes: Arc<Mutex<HashSet<GunyahIrqRoute>>>,
+     hv_cfg: crate::Config,
+ }
+@@ -422,6 +424,7 @@
+         let vm_descriptor = unsafe { SafeDescriptor::from_raw_descriptor(ret) };
+         // Slot counter for chunked LEND: starts after the last region index.
+         let mut next_lend_slot = guest_mem.num_regions() as usize;
++        let mut guest_ram_pin: Option<pin::LongtermPin> = None;
+         for region in guest_mem.regions() {
+             let lend = if cfg.protection_type.isolates_memory() {
+                 match region.options.purpose {
+@@ -697,6 +700,14 @@
+                         );
+                         return Err(Error::new(libc::ENOMEM));
+                     }
++                    // Do all FOLL_LONGTERM migration before any parcel reaches firmware.
++                    // The optional probe node is absent on this host; mlock alone is not
++                    // a long-term pin and cannot satisfy this prerequisite.
++                    guest_ram_pin = Some(pin::LongtermPin::pin_required(
++                        region.host_addr as u64,
++                        full_size,
++                        pin::PinSite::PreBoot,
++                    )?);
+                     base::info!(
+                         "GH-SHIM: window gpa={:#x} size={:#x} prepared; it is shared after \
+                          GH_VM_START and accepted by the shim",
+@@ -838,6 +849,7 @@
+             pinned_regions: Arc::new(Mutex::new(Vec::new())),
+             blob_regions: Arc::new(Mutex::new(BTreeMap::new())),
+             blob_pins: Arc::new(Mutex::new(BTreeMap::new())),
++            guest_ram_pin: Arc::new(guest_ram_pin),
+             routes: Arc::new(Mutex::new(HashSet::new())),
+             hv_cfg: cfg,
+         })
+@@ -976,6 +988,7 @@
+             pinned_regions: self.pinned_regions.clone(),
+             blob_regions: self.blob_regions.clone(),
+             blob_pins: self.blob_pins.clone(),
++            guest_ram_pin: self.guest_ram_pin.clone(),
+             routes: self.routes.clone(),
+             hv_cfg: self.hv_cfg,
+         })
+@@ -1604,6 +1617,7 @@
+             pinned_regions: self.pinned_regions.clone(),
+             blob_regions: self.blob_regions.clone(),
+             blob_pins: self.blob_pins.clone(),
++            guest_ram_pin: self.guest_ram_pin.clone(),
+             routes: self.routes.clone(),
+             hv_cfg: self.hv_cfg,
+         })
+--- a/hypervisor/src/gunyah/pin.rs
++++ b/hypervisor/src/gunyah/pin.rs
+@@ -523,6 +523,29 @@
+         Ok(pin)
+     }
+ 
++    /// Mandatory whole-window pin. Absence of the optional probe or io_uring is
++    /// not evidence of pinnability. Do not accept environment opt-outs here.
++    /// The caller retains the pin for the VM lifetime, before firmware sharing.
++    pub fn pin_required(host_addr: u64, size: u64, site: PinSite) -> Result<LongtermPin> {
++        if size == 0 || size > (2u64 << 30) || host_addr.checked_add(size).is_none() {
++            return Err(Error::new(libc::EINVAL));
++        }
++        if fail_injected(site) {
++            return Err(Error::new(libc::ENOMEM));
++        }
++        info!("GH-PIN: required whole-window pin begin ({} MiB)", size >> 20);
++        match Self::pin(host_addr, size, site)? {
++            Some(pin) => {
++                info!("GH-PIN: required whole-window pin held ({} MiB)", size >> 20);
++                Ok(pin)
++            }
++            None => {
++                error!("GH-PIN: required whole-window pin unavailable; refusing before firmware sharing");
++                Err(Error::new(libc::ENOTSUP))
++            }
++        }
++    }
++
+     fn pin(host_addr: u64, size: u64, site: PinSite) -> Result<Option<LongtermPin>> {
+         let mut params = IoUringParams::default();
+         // SAFETY: passing a properly sized, zeroed params struct; the kernel writes it back.
+@@ -538,7 +561,7 @@
+             // No io_uring on this kernel (or policy forbids it): that is not a reason to refuse
+             // the VM. Carry on unprobed -- the gunyah ioctl will pin as it always did.
+             warn!(
+-                "GH-PIN[{}]: io_uring unavailable ({}), continuing without the pin probe",
++                "GH-PIN[{}]: io_uring unavailable ({}); no pin was taken",
+                 site.as_str(),
+                 err
+             );

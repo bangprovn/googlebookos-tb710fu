@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "donor_fingerprint": "Dell/mica/mica:17/CL3B.260622.273.R1/16471258:user/release-keys",
+  "target_vendor_fingerprint": "Lenovo/TB710FU/TB710FU:16/BP2A.250605.031.A3/ZUI_17.5.04.059_260327_ROW:user/release-keys",
+  "enable_display": {
+    "path": "../../../artifacts/device/first-boot-20261013/guest-gpu-20261019-v1/enable_display.original",
+    "sha256": "0e9f923fabc1ea61f075e5577641d653d17a17b85caa533b31411a4103646c75"
+  },
+  "shader_observation": {
+    "path": "../../../artifacts/device/first-boot-20261013/guest-gpu-20261019-v1/automatic-gles-receipt.json",
+    "sha256": "8005df2ba073865e6ae04d40f49a3ba274cd7aa6d1b66978845ee480a00ecd70"
+  }
+}

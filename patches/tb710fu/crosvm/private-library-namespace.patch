@@ -1,0 +1,11 @@
+--- a/crosvm_device_only/Android.bp
++++ b/crosvm_device_only/Android.bp
+@@ -141,7 +141,7 @@
+     },
+     ld_flags: [
+         "-Wl,--rpath,\\$$ORIGIN",
+-        "-Wl,--rpath,\\$$ORIGIN/../lib64",
++        "-Wl,--rpath,/system_ext/lib64/gb-runtime-v1",
+         "-Wl,--rpath,\\$$ORIGIN/../../lib64",
+     ],
+ }

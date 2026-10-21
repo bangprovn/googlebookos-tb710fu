@@ -1,0 +1,152 @@
+--- a/src/venus/vkr_instance.c
++++ b/src/venus/vkr_instance.c
+@@ -89,12 +89,71 @@
+                                     &instance->proc_table);
+ }
+ 
++/* Native release drivers report allocation failures through debug utils. Only
++ * these fixed allocation diagnostics are useful here: never log arbitrary guest
++ * debug messages, object names or application strings. One message per operation
++ * per process bounds repeated failures; the atomic bitmask cannot wrap.
++ */
++static VkBool32
++vkr_allocation_callback(UNUSED VkDebugUtilsMessageSeverityFlagBitsEXT severity,
++                        UNUSED VkDebugUtilsMessageTypeFlagsEXT types,
++                        const VkDebugUtilsMessengerCallbackDataEXT *data,
++                        UNUSED void *user)
++{
++   static unsigned logged_operations;
++   if (!data || !data->pMessage)
++      return VK_FALSE;
++
++   const char *operation;
++   unsigned bit;
++   if (!strncmp(data->pMessage, "Failed to import dma-buf (",
++                sizeof("Failed to import dma-buf (") - 1)) {
++      operation = "import_dmabuf";
++      bit = 1;
++   } else if (!strncmp(data->pMessage, "Failed to get dma-buf info (",
++                       sizeof("Failed to get dma-buf info (") - 1)) {
++      operation = "get_dmabuf_info";
++      bit = 2;
++   } else {
++      return VK_FALSE;
++   }
++   if (!(__atomic_fetch_or(&logged_operations, bit, __ATOMIC_RELAXED) & bit)) {
++      const char *error = "unclassified";
++      const struct { const char *text; const char *name; } errors[] = {
++         {"(Invalid argument)", "invalid_argument"},
++         {"(Permission denied)", "permission_denied"},
++         {"(Operation not permitted)", "operation_not_permitted"},
++         {"(Cannot allocate memory)", "no_memory"},
++         {"(Out of memory)", "no_memory"},
++         {"(Bad address)", "bad_address"},
++         {"(Bad file descriptor)", "bad_fd"},
++         {"(No such device)", "no_device"},
++         {"(Operation not supported)", "not_supported"},
++         {"(Device or resource busy)", "busy"},
++         {"(Too many open files)", "too_many_files"},
++         {"(Input/output error)", "io_error"},
++      };
++      for (unsigned i = 0; i < ARRAY_SIZE(errors); i++) {
++         if (strstr(data->pMessage, errors[i].text)) {
++            error = errors[i].name;
++            break;
++         }
++      }
++      vkr_log("GB-VENUS-ALLOC: driver_operation=%s errno_class=%s", operation, error);
++   }
++   return VK_FALSE;
++}
++
+ static void
+ vkr_dispatch_vkCreateInstance(struct vn_dispatch_context *dispatch,
+                               struct vn_command_vkCreateInstance *args)
+ {
+    struct vkr_context *ctx = dispatch->data;
+    struct vn_global_proc_table *vk = &ctx->proc_table;
++
++   const char *diagnostic_policy = getenv("GB_VENUS_ALLOCATION_DIAGNOSTICS_V1");
++   const bool allocation_diagnostics = diagnostic_policy &&
++      !strcmp(diagnostic_policy, "1") && ctx->validate_level == VKR_CONTEXT_VALIDATE_NONE;
+ 
+    if (ctx->instance) {
+       vkr_context_set_fatal(ctx);
+@@ -177,6 +236,19 @@
+       create_info->pNext = &messenger_create_info;
+    }
+ 
++   if (allocation_diagnostics) {
++      ext_names[ext_count++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
++      messenger_create_info = (VkDebugUtilsMessengerCreateInfoEXT){
++         .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
++         .pNext = create_info->pNext,
++         .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
++                            VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
++         .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT,
++         .pfnUserCallback = vkr_allocation_callback,
++      };
++      create_info->pNext = &messenger_create_info;
++   }
++
+ #ifdef __APPLE__
+    if (vkr_library_has_portability_enumeration(
+           vk->EnumerateInstanceExtensionProperties)) {
+@@ -224,6 +296,7 @@
+    }
+ 
+    instance->api_version = app_info.apiVersion;
++   instance->allocation_diagnostics = allocation_diagnostics;
+ 
+    vn_replace_vkCreateInstance_args_handle(args);
+    args->ret = vk->CreateInstance(create_info, NULL, &instance->base.handle.instance);
+@@ -234,13 +307,20 @@
+ 
+    vkr_instance_init_proc_table(instance, ctx);
+ 
+-   if (ctx->validate_level != VKR_CONTEXT_VALIDATE_NONE) {
++   if (ctx->validate_level != VKR_CONTEXT_VALIDATE_NONE || allocation_diagnostics) {
+       instance->create_debug_utils_messenger =
+          (PFN_vkCreateDebugUtilsMessengerEXT)ctx->get_proc_addr(
+             instance->base.handle.instance, "vkCreateDebugUtilsMessengerEXT");
+       instance->destroy_debug_utils_messenger =
+          (PFN_vkDestroyDebugUtilsMessengerEXT)ctx->get_proc_addr(
+             instance->base.handle.instance, "vkDestroyDebugUtilsMessengerEXT");
++
++      if (!instance->create_debug_utils_messenger || !instance->destroy_debug_utils_messenger) {
++         args->ret = VK_ERROR_EXTENSION_NOT_PRESENT;
++         instance->proc_table.DestroyInstance(instance->base.handle.instance, NULL);
++         free(instance);
++         return;
++      }
+ 
+       messenger_create_info.pNext = NULL;
+       args->ret = instance->create_debug_utils_messenger(instance->base.handle.instance,
+@@ -252,6 +332,8 @@
+          free(instance);
+          return;
+       }
++      if (allocation_diagnostics)
++         vkr_log("GB-VENUS-ALLOC: diagnostic_callback_ready=true");
+    }
+ 
+    vkr_context_add_instance(ctx, instance, app_info.pApplicationName);
+@@ -272,7 +354,7 @@
+       vkr_physical_device_destroy(ctx, physical_dev);
+    }
+ 
+-   if (ctx->validate_level != VKR_CONTEXT_VALIDATE_NONE) {
++   if (ctx->validate_level != VKR_CONTEXT_VALIDATE_NONE || instance->allocation_diagnostics) {
+       instance->destroy_debug_utils_messenger(instance->base.handle.instance,
+                                               instance->validation_messenger, NULL);
+    }
+--- a/src/venus/vkr_instance.h
++++ b/src/venus/vkr_instance.h
+@@ -20,6 +20,7 @@
+    PFN_vkCreateDebugUtilsMessengerEXT create_debug_utils_messenger;
+    PFN_vkDestroyDebugUtilsMessengerEXT destroy_debug_utils_messenger;
+    VkDebugUtilsMessengerEXT validation_messenger;
++   bool allocation_diagnostics;
+ 
+    uint32_t physical_device_count;
+    VkPhysicalDevice *physical_device_handles;

@@ -1,0 +1,104 @@
+{
+  "schema_version": 1,
+  "revision": 1,
+  "source_version": "Vulkan-Tools v1.4.304",
+  "source": "https://github.com/KhronosGroup/Vulkan-Tools/blob/v1.4.304/cube/cube.c",
+  "base_patch": "owned-fixed-window.json",
+  "files": [
+    {
+      "path": "cube.c",
+      "base_path": "artifacts/device/first-boot-20261013/guest-swapchain-budget-20261020-v1/owned-fixed-build-v2/cube.c",
+      "sha256": "21441c3d71b1653b8f67ccec62e0ad83915de012bb27140b3dd0840a5c1b01fb",
+      "result_sha256": "e9c4d095143496c2fe4af48fc4e5fe3b334baec3b893e776e109ba4291a8ded6"
+    }
+  ],
+  "patch_sha256": "9e8aa9ee1d66e114b347598ab6e14596e1f284105cef70ecaf7fe861cdd6b88e",
+  "scope": "Process-only separate long-running owned fixed-size Wayland diagnostic; unchanged default/fixed/resize behavior without the exact new token",
+  "opt_in": {
+    "GB_VKCUBE_OWNED_SOAK_V1": "owned-soak-v1"
+  },
+  "required_arguments": [
+    "--wsi",
+    "wayland",
+    "--width",
+    "640",
+    "--height",
+    "480",
+    "--c",
+    "1000000"
+  ],
+  "required_environment": [
+    "GB_OWNED_COMPOSITOR_PID",
+    "WAYLAND_DISPLAY (wayland-0, wayland-1 or wayland-2)"
+  ],
+  "simultaneous_owned_modes_refused": true,
+  "owned_peer_uid": 1000,
+  "wl_seat_bound_in_owned_modes": false,
+  "soak_alarm_seconds": 660,
+  "fixed_and_resize_alarm_seconds": 90,
+  "finite_soak_frame_limit": 1000000,
+  "early_natural_or_other_normal_loop_completion": "refuse exit2; not soak success",
+  "planned_stop": "Controller must establish >=600 seconds and owned-child liveness before SIGINT, then bounded reap; source does not install or change signal handlers",
+  "maximum_images_per_swapchain": 4,
+  "maximum_configure_events": 64,
+  "maximum_configure_states": 64,
+  "maximum_old_swapchain_recreations": 16,
+  "fixed_width": 640,
+  "fixed_height": 480,
+  "fixed_rgba_pixel_bytes_per_image": 1228800,
+  "driver_allocation_overhead_included": false,
+  "new_vulkan_calls_or_resource_policies": false,
+  "notes": [
+    "The original upstream renderer/presenter is preserved. Owned mode skips wl_seat binding and validates the exact compositor PID and UID1000 over SO_PEERCRED before registry binding.",
+    "The original fixed2400..3600 and resize2200..2400 argument ranges and90-second alarms are unchanged; only the exact soak token permits1000000frames with660-second alarm.",
+    "Early normal loop exit refuses. Planned SIGINT retains the existing process signal behavior; it is not graceful Vulkan teardown or explicit presentation-retirement proof.",
+    "Actual image count is checked after swapchain creation; the minImageCount request is not a driver allocation cap. All original extent, image-count, configuration and recreation bounds remain.",
+    "Soak-only texture-image API failures reuse bounded metadata reporting and exit2; fixed diagnostics keep their original prefix/output, default and resize behavior remain unchanged.",
+    "Host helper tests do not exercise real Wayland/GPU, Android, memory workload, physical performance or any device."
+  ],
+  "license": "Apache-2.0; original notices retained",
+  "host_helper_tests_verified": true,
+  "build_verified": true,
+  "device_runtime_verified": false,
+  "presentation_verified": false,
+  "full_port_verified": false,
+  "host_helper_test_command": "PYTHONDONTWRITEBYTECODE=1 python3 tests/vulkan_cube_soak_window_patch.py -v",
+  "host_helper_tests": 3,
+  "host_helper_sanitizers": [
+    "address",
+    "undefined"
+  ],
+  "host_helper_invocations": 10,
+  "regression_tests_passed": {
+    "tests/vulkan_cube_fixed_window_patch.py": 3,
+    "gb-framework::terminal_soak": 7,
+    "tests/vulkan_cube_resize_patch.py": 2
+  },
+  "historical_actual_768_mib_record_revalidated": true,
+  "host_inputs": {
+    "tests/vulkan_cube_soak_window_patch.py": "af94519d08a29aaa316f7c4cb3841e5ed876c4226db652c87fcd0288979baafb",
+    "crates/gb-framework/src/terminal_soak.rs": "1ca619986e41e348863b4199fbe9a4e8d33b854dffb6f7b1f97dc96ad376a03f"
+  },
+  "terminal_soak_validator": {
+    "memory_mib_allowlist": [
+      512,
+      768
+    ],
+    "duration_seconds": 600,
+    "disk_mib": 64,
+    "liveness_samples": 20,
+    "memory_available_preflight_kib": 1126400,
+    "scope": "Explicit512MiB acceptance only; matching workload receipt required. Actual historical768MiB evidence remains valid. No reduction in duration, disk, liveness, planned-stop, filtering or cleanup checks."
+  },
+  "candidate_binary_sha256": "dda545146866aebbc357f0b5a611c34058383ce2dbc67f4a46322c2171bf633a",
+  "candidate_binary_bytes": 396016,
+  "build_seconds": 5.526,
+  "compile_provenance": "artifacts/device/first-boot-20261013/guest-native-backing-budget-20261020-v1/owned-soak-build-v1/provenance.json",
+  "build_scope": "Offline ARM64 ELF compilation and metadata only; no executable/Wayland/GPU/device runtime test or controller launch",
+  "elf_needed": [
+    "ld-linux-aarch64.so.1",
+    "libc.so.6",
+    "libm.so.6"
+  ],
+  "new_undefined_symbols": []
+}

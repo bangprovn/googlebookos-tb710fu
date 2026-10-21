@@ -1,0 +1,3 @@
+
+; Opt-in owner 2 GiB VMM adapter handoff; same confined shell VMM domain.
+(allow shell_virtmgr_crosvm crosvm_exec (file (execute_no_trans)))

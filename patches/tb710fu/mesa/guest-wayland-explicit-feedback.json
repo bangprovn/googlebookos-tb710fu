@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "source_version": "25.0.7-2+deb13u1",
+  "base_file": "src/vulkan/wsi/wsi_common_wayland.c",
+  "base_sha256": "e11e826e49f2085d863a5fad8d06d0b5bba3697c86f49bd4ad606774a5c38212",
+  "result_sha256": "80501aa24416112e6a95525c7c6a1445b41c1ee0b862d2bbe136e8a9332abfc5",
+  "patch_sha256": "102a43f9f75ac02d683f6d5108c2d251418ee85cf49a3969b75e756d2796d01b",
+  "opt_in": {
+    "GB_WSI_EXPLICIT_FEEDBACK_V1": "qualified-linear-rgbx-v1"
+  },
+  "scope": "Process-only explicit modifier selection after implicit-only per-surface feedback; no pixel copy or host import-policy change",
+  "required_external_qualification": {
+    "host_renderer_sha256": "156a258fe636cc0c1b1232cbb89871ba6dbaa7811bbe0f3cafa5695c671c1f71",
+    "compositor_profile": "patches/tb710fu/mesa/guest-virgl-linear-modifiers.json",
+    "controller_must_pin_full_private_compositor_closure": true
+  },
+  "eligible_formats": [
+    "VK_FORMAT_R8G8B8A8_UNORM",
+    "VK_FORMAT_B8G8R8A8_UNORM"
+  ],
+  "device_conditions": [
+    "Default main_device nonzero and matches Vulkan render or primary DRM identity",
+    "same_gpu true; software WSI refused",
+    "When surface main_device is available it must exactly match default main_device",
+    "Every qualified selection requires exact raw-fourcc LINEAR in completed default feedback targeted at that exact nonzero main_device",
+    "A main_device/new-generation event invalidates committed proof immediately until feedback.done"
+  ],
+  "selection": [
+    "Qualified mode selects only explicit LINEAR, for all initial, surface-feedback and recreation paths",
+    "Merged per-surface VkFormat flags/modifier vectors cannot independently qualify raw alpha/opaque support",
+    "The requested raw fourcc must have completed same-device default-feedback LINEAR evidence plus advertised global LINEAR membership",
+    "Pending initial surface feedback may use completed qualified default feedback",
+    "Use identical effective selection in allocation and feedback comparison",
+    "If qualification or explicit support is missing, fail allocation with VK_ERROR_FORMAT_NOT_SUPPORTED; updated ineligible feedback marks chain suboptimal",
+    "Track pending per-main-device four-format LINEAR mask; commit only at default feedback.done and invalidate previous committed proof on every new main_device generation"
+  ],
+  "preserved": [
+    "Unset or other opt-in values retain existing Mesa behavior",
+    "INVALID is never treated as LINEAR",
+    "Qualified mode never mutates feedback vectors or selects their nonlinear entries",
+    "No host acceptance of implicit modifiers",
+    "Acquire-syncfd and CPU present-fence patches unchanged"
+  ],
+  "known_limitation": "Missing Vulkan DRM device identity fails closed; runtime controller must establish actual identity before qualification",
+  "observed_failure": {
+    "runtime": "guest-swapchain-budget-20261020-v1/owned-resize-runtime-v1/result.json",
+    "initial_buffers_modifier": 0,
+    "initial_buffers": 8,
+    "resized_extent": [
+      1280,
+      688
+    ],
+    "resized_stride": 5120,
+    "resized_buffers_modifier": 72057594037927935,
+    "restored_buffers_modifier": 72057594037927935,
+    "presentation_verified": false
+  },
+  "license": "MIT; complete original Mesa source notices retained",
+  "installed": false,
+  "build_verified": true,
+  "host_helper_verified": true,
+  "runtime_verified": true,
+  "full_port_verified": false,
+  "revision": 2,
+  "host_validation": {
+    "command": "PYTHONDONTWRITEBYTECODE=1 python3 tests/guest_wayland_explicit_feedback.py",
+    "tests_passed": 7,
+    "helper_scenarios_passed": 39,
+    "sanitizers": [
+      "AddressSanitizer",
+      "UndefinedBehaviorSanitizer"
+    ],
+    "patch_apply_and_reverse_exact": true,
+    "scope": "Actual selector, default-feedback callbacks and modifier-set comparison with small list-storage stand-ins; no GPU, full Wayland protocol decoder, complete Mesa build or device qualification",
+    "review_regressions": [
+      "Render-to-primary and primary-to-render pending default feedback cannot reuse a committed mask",
+      "Same-device pending generation invalidates old proof",
+      "ARGB LINEAR plus XRGB INVALID cannot qualify opaque XRGB; corresponding BGRA/RGBA and reverse-alpha cases refused",
+      "Every qualified result is one explicit LINEAR and cannot alias merged feedback vectors"
+    ]
+  },
+  "candidate_driver_sha256": "8d34c42f69d99e372d824ff0b970b2e775d325d43d2ed621ab5d1545b268c698",
+  "abi_preserved": true,
+  "persistent_profile_enabled": false,
+  "runtime_scope": "One controlled 2,400-frame native cube run at 640x480 -> 1280x688 -> 640x480; 16 explicit LINEAR buffers, two changing display samples per size and pre/post compute checks. Full-port, conformance and explicit retirement are unqualified.",
+  "runtime_evidence": "../../../docs/tb710fu-native-resize-20261020.json",
+  "same_candidate_controls": {
+    "opt_out": "Legacy explicit-to-implicit modifier regression reproduced after resize; changing pixels do not establish resized presentation.",
+    "copy_wsi": "Stock vkcube, 2,400 frames, 25.637 seconds, four changing visual samples; no compositor restart.",
+    "persistent_profile_changed": false
+  }
+}

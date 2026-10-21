@@ -1,0 +1,2 @@
+# Lenovo Yoga Tab currently observed USB identity; grants plugdev access to ADB.
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="17ef", ATTR{idProduct}=="7f58", MODE="0660", GROUP="plugdev", TAG+="uaccess"

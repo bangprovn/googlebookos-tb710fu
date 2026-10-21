@@ -1,0 +1,25 @@
+[package]
+name = "gb-firmware"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+gb-apex.workspace = true
+gb-tools.workspace = true
+serde.workspace = true
+toml.workspace = true
+fs2.workspace = true
+gb-core.workspace = true
+gb-partition.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+zip.workspace = true
+roxmltree.workspace = true
+prost.workspace = true
+goblin.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

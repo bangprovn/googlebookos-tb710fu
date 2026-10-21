@@ -1,0 +1,634 @@
+--- a/hypervisor/src/gunyah/mod.rs
++++ b/hypervisor/src/gunyah/mod.rs
+@@ -400,8 +400,17 @@
+     blob_pins: Arc<Mutex<BTreeMap<u32, pin::LongtermPin>>>,
+     /// Whole runtime RAM pinned before the first firmware transfer; shared by VM clones.
+     guest_ram_pin: Arc<Option<pin::LongtermPin>>,
++    ram_transfer: Arc<Mutex<RamTransfer>>,
+     routes: Arc<Mutex<HashSet<GunyahIrqRoute>>>,
+     hv_cfg: crate::Config,
++}
++
++#[derive(Default)]
++struct RamTransfer {
++    plan: Option<runtime_parcel_plan::ParcelPlan>,
++    started: Option<std::time::Instant>,
++    complete: bool,
++    last_status: u64,
+ }
+ 
+ impl AsRawDescriptor for GunyahVm {
+@@ -851,6 +860,7 @@
+             blob_regions: Arc::new(Mutex::new(BTreeMap::new())),
+             blob_pins: Arc::new(Mutex::new(BTreeMap::new())),
+             guest_ram_pin: Arc::new(guest_ram_pin),
++            ram_transfer: Arc::new(Mutex::new(RamTransfer::default())),
+             routes: Arc::new(Mutex::new(HashSet::new())),
+             hv_cfg: cfg,
+         })
+@@ -921,6 +931,7 @@
+             vcpu,
+             id,
+             run_mmap: Arc::new(run_mmap),
++            runtime_vm: if id == 0 { Some(Box::new(self.try_clone()?)) } else { None },
+         })
+     }
+ 
+@@ -990,6 +1001,7 @@
+             blob_regions: self.blob_regions.clone(),
+             blob_pins: self.blob_pins.clone(),
+             guest_ram_pin: self.guest_ram_pin.clone(),
++            ram_transfer: self.ram_transfer.clone(),
+             routes: self.routes.clone(),
+             hv_cfg: self.hv_cfg,
+         })
+@@ -1060,7 +1072,8 @@
+         let ret = unsafe { ioctl(self, GH_VM_START) };
+         if ret == 0 {
+             self.share_probe();
+-            self.share_guest_ram_window()?;
++            // The primary vCPU advances sharing between MMIO exits, so the shim
++            // can accept a parcel before another outstanding grant is created.
+             Ok(())
+         } else {
+             base::error!("GH-DIAG: GH_VM_START failed");
+@@ -1068,64 +1081,66 @@
+         }
+     }
+ 
+-    /// Hand the guest's RAM over, now that there is a VM to hand it to.
+-    ///
+-    /// This is the whole of the pseudo-unprotected mode on the host side. The window has been
+-    /// sitting in a memfd with the payload already written into it; sharing it makes a memparcel
+-    /// the guest can accept, and the handles go in the handoff page for the shim to find. Nothing
+-    /// here can happen earlier: a memparcel handle does not exist until the VM does.
+-    ///
+-    /// The order matters at the end. `ready` is written last, after every parcel is shared and
+-    /// every handle recorded, because the shim spins on it and would otherwise read a handle of
+-    /// zero and ask the resource manager to accept nothing.
+-    fn share_guest_ram_window(&self) -> Result<()> {
++    /// Advance one grant between primary-vCPU exits. At most one grant is unaccepted.
++    /// No background thread, extra capability, or simultaneous kernel transaction is needed.
++    fn advance_shared_ram(&self) -> Result<bool> {
+         #[cfg(any(target_arch = "arm", target_arch = "aarch64"))]
+         {
+             use crate::gunyah::shim_abi as abi;
+-
+-            if !self.hv_cfg.protection_type.shares_guest_ram() {
+-                return Ok(());
++            if !self.hv_cfg.protection_type.shares_guest_ram() { return Ok(true); }
++            let mem = self.guest_mem.clone();
++            let window = mem.regions().find(|r| r.options.purpose == MemoryRegionPurpose::SharedGuestRam);
++            let handoff = mem.regions().find(|r| r.options.purpose == MemoryRegionPurpose::ShimHandoff);
++            let (Some(window), Some(handoff)) = (window, handoff) else { return Err(Error::new(EINVAL)); };
++            let size: u64 = window.size.try_into().map_err(|_| Error::new(EINVAL))?;
++            let ho = handoff.guest_addr;
++            let mut progress = self.ram_transfer.lock();
++            let status: u64 = mem.read_obj_from_addr_volatile(
++                ho.unchecked_add(core::mem::offset_of!(abi::ShimHandoff, status) as u64))
++                .map_err(|_| Error::new(EIO))?;
++            if status != progress.last_status {
++                base::info!("GH-SHIM: streamed shim status={:#x}", status);
++                progress.last_status = status;
+             }
+-            let mem = self.guest_mem.clone();
+-            let window = mem
+-                .regions()
+-                .find(|r| r.options.purpose == MemoryRegionPurpose::SharedGuestRam);
+-            let handoff = mem
+-                .regions()
+-                .find(|r| r.options.purpose == MemoryRegionPurpose::ShimHandoff);
+-            let (Some(window), Some(handoff)) = (window, handoff) else {
+-                base::error!("GH-SHIM: no window or no handoff region; refusing to start");
+-                return Err(Error::new(EINVAL));
+-            };
+-
+-            let size: u64 = window.size.try_into().unwrap();
+-            let ho = handoff.guest_addr;
+-
+-            // DROIDVM_SHIM_PARCEL_MB: hand the window over in parcels of at most this many MiB.
+-            //
+-            // Zero, the default, means one parcel however big the window is. It is worth a knob
+-            // because the cost of building a parcel is not the same everywhere: on android14-6.1
+-            // the resource manager assembles it from every folio there and then (~3.4 s for
+-            // 4 GiB), while the 6.12 driver demand-pages it (~60 ms). Splitting spends memparcels
+-            // -- MAX_MEMPARCEL_PER_VM is 1024 for the whole VM, shared with Android's own -- and
+-            // buys nothing unless something is measured to be faster for it, so nobody gets it
+-            // without asking.
+-            let chunk = match std::env::var("DROIDVM_SHIM_PARCEL_MB") {
+-                Ok(value) => {
+-                    let mb = value.parse::<u64>().map_err(|_| Error::new(EINVAL))?;
+-                    if mb == 0 { size } else {
+-                        mb.checked_mul(1 << 20)
+-                            .and_then(|bytes| bytes.checked_add((2 << 20) - 1))
+-                            .map(|bytes| (bytes / (2 << 20)) * (2 << 20))
+-                            .ok_or_else(|| Error::new(EINVAL))?.min(size)
++            if status & abi::SHIM_STATUS_ERROR != 0 {
++                let error: u64 = mem.read_obj_from_addr_volatile(
++                    ho.unchecked_add(core::mem::offset_of!(abi::ShimHandoff, error) as u64))
++                    .map_err(|_| Error::new(EIO))?;
++                base::error!("GH-SHIM: guest rejected streamed transfer, error={:#x}", error);
++                return Err(Error::new(EIO));
++            }
++            if progress.complete { return Ok(status == abi::SHIM_STATUS_JUMPING); }
++            if progress.plan.is_none() {
++                let chunk = match std::env::var("DROIDVM_SHIM_PARCEL_MB") {
++                    Ok(value) => {
++                        let mb = value.parse::<u64>().map_err(|_| Error::new(EINVAL))?;
++                        if mb == 0 { size } else {
++                            mb.checked_mul(1 << 20)
++                                .and_then(|bytes| bytes.checked_add((2 << 20) - 1))
++                                .map(|bytes| (bytes / (2 << 20)) * (2 << 20))
++                                .ok_or_else(|| Error::new(EINVAL))?.min(size)
++                        }
+                     }
+-                }
+-                Err(std::env::VarError::NotPresent) => size,
+-                Err(_) => return Err(Error::new(EINVAL)),
+-            };
+-            let mut plan = runtime_parcel_plan::ParcelPlan::new(size, chunk, abi::SHIM_MAX_PARCELS)
+-                .map_err(|_| Error::new(EINVAL))?;
+-            let started = std::time::Instant::now();
++                    Err(std::env::VarError::NotPresent) => size,
++                    Err(_) => return Err(Error::new(EINVAL)),
++                };
++                progress.plan = Some(runtime_parcel_plan::ParcelPlan::new(size, chunk, abi::SHIM_MAX_PARCELS)
++                    .map_err(|_| Error::new(EINVAL))?);
++                progress.started = Some(std::time::Instant::now());
++            }
++            let started = progress.started.ok_or_else(|| Error::new(EINVAL))?;
++            if started.elapsed() > std::time::Duration::from_secs(180) {
++                base::error!("GH-SHIM: streamed acceptance deadline exceeded");
++                return Err(Error::new(libc::ETIMEDOUT));
++            }
++            let accepted: u32 = mem.read_obj_from_addr_volatile(
++                ho.unchecked_add(core::mem::offset_of!(abi::ShimHandoff, accepted) as u64))
++                .map_err(|_| Error::new(EIO))?;
++            std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
++            let plan = progress.plan.as_mut().ok_or_else(|| Error::new(EINVAL))?;
++            if !abi::validate_stream(plan.count() as u32, accepted, 0).map_err(|_| Error::new(EIO))? {
++                return Ok(false);
++            }
+             while let Some((off, len)) = plan.request().map_err(|_| Error::new(libc::E2BIG))? {
+                 let i = plan.count() as u64;
+                 let at = window
+@@ -1184,34 +1199,25 @@
+                 };
+                 mem.write_all_at_addr(bytes, dst)
+                     .map_err(|_| Error::new(EINVAL))?;
++                std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+                 plan.accepted().map_err(|_| Error::new(EINVAL))?;
++                mem.write_obj_at_addr(plan.count() as u32,
++                    ho.unchecked_add(core::mem::offset_of!(abi::ShimHandoff, nparcels) as u64))
++                    .map_err(|_| Error::new(EINVAL))?;
++                std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
++                return Ok(false);
+             }
+-            let nparcels = plan.count() as u64;
+-            base::info!(
+-                "GH-SHIM: window {:#x}+{:#x} shared as {} parcel(s) in {:?}",
+-                window.guest_addr.offset(),
+-                size,
+-                nparcels,
+-                started.elapsed(),
+-            );
+-
+-            mem.write_obj_at_addr(
+-                nparcels as u32,
+-                ho.checked_add(core::mem::offset_of!(abi::ShimHandoff, nparcels) as u64)
+-                    .ok_or_else(|| Error::new(EINVAL))?,
+-            )
+-            .map_err(|_| Error::new(EINVAL))?;
+-            // Last, and only now.
+-            mem.write_obj_at_addr(
+-                1u64,
+-                ho.checked_add(core::mem::offset_of!(abi::ShimHandoff, ready) as u64)
+-                    .ok_or_else(|| Error::new(EINVAL))?,
+-            )
+-            .map_err(|_| Error::new(EINVAL))?;
+-
+-            watch_shim(mem, ho);
+-        }
+-        Ok(())
++            let nparcels = plan.count();
++            mem.write_obj_at_addr(1u64,
++                ho.unchecked_add(core::mem::offset_of!(abi::ShimHandoff, ready) as u64))
++                .map_err(|_| Error::new(EINVAL))?;
++            std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
++            progress.complete = true;
++            base::info!("GH-SHIM: complete window shared and accepted as {} parcel(s) in {:?}", nparcels, started.elapsed());
++            return Ok(false);
++        }
++        #[cfg(not(any(target_arch = "arm", target_arch = "aarch64")))]
++        Ok(true)
+     }
+ 
+     fn handle_inflate(&self, guest_addr: GuestAddress, size: u64) -> Result<()> {
+@@ -1233,84 +1239,6 @@
+             Err(_) => Err(Error::new(EIO)),
+         }
+     }
+-}
+-
+-/// Say what the shim did.
+-///
+-/// Everything the shim can go wrong at happens before there is a console, an interrupt controller
+-/// or anyone listening, so the handoff page is the only way it can speak. Without something
+-/// reading it, a shim that refuses to hand over is a VM that sits there: no output, no exit, no
+-/// clue. This turns that into one log line.
+-///
+-/// It watches from a thread because the vcpus have not started yet when the window is shared --
+-/// they are started by the caller, some way further up -- and stops as soon as the shim reaches
+-/// the point where it jumps, which is the last thing it does.
+-#[cfg(any(target_arch = "arm", target_arch = "aarch64"))]
+-fn watch_shim(mem: GuestMemory, handoff: GuestAddress) {
+-    use crate::gunyah::shim_abi as abi;
+-
+-    std::thread::Builder::new()
+-        .name("gh_shim_watch".into())
+-        .spawn(move || {
+-            let status_at = handoff.unchecked_add(core::mem::offset_of!(abi::ShimHandoff, status) as u64);
+-            let error_at = handoff.unchecked_add(core::mem::offset_of!(abi::ShimHandoff, error) as u64);
+-            let probe_at =
+-                handoff.unchecked_add(core::mem::offset_of!(abi::ShimHandoff, exec_probe) as u64);
+-            let msg_at = handoff.unchecked_add(core::mem::offset_of!(abi::ShimHandoff, msg) as u64);
+-            let mut last = 0u64;
+-            // Ten seconds is far longer than the shim's own timeouts; past that it is not slow,
+-            // it is not running, and the thread has nothing left to add.
+-            for _ in 0..1000 {
+-                // Volatile: this is a poll of memory another CPU is writing, and the read has to
+-                // happen every time round rather than once.
+-                let status: u64 = mem.read_obj_from_addr_volatile(status_at).unwrap_or(0);
+-                if status != last {
+-                    last = status;
+-                    match status {
+-                        abi::SHIM_STATUS_RUNNING => base::info!("GH-SHIM: shim is running"),
+-                        abi::SHIM_STATUS_ACCEPTED => {
+-                            let probe: u64 = mem.read_obj_from_addr(probe_at).unwrap_or(0);
+-                            if probe != 0 {
+-                                base::info!(
+-                                    "GH-SHIM: window accepted; the guest executed out of it and \
+-                                     got {} (42 means yes)",
+-                                    probe
+-                                );
+-                            } else {
+-                                base::info!("GH-SHIM: window accepted");
+-                            }
+-                        }
+-                        abi::SHIM_STATUS_DT_DONE => base::info!("GH-SHIM: /memory now names the window"),
+-                        abi::SHIM_STATUS_JUMPING => {
+-                            base::info!("GH-SHIM: handing over to the payload");
+-                            return;
+-                        }
+-                        s if s & abi::SHIM_STATUS_ERROR != 0 => {
+-                            let mut msg = [0u8; 256];
+-                            let _ = mem.read_exact_at_addr(&mut msg, msg_at);
+-                            let end = msg.iter().position(|&c| c == 0).unwrap_or(msg.len());
+-                            let error: u64 = mem.read_obj_from_addr(error_at).unwrap_or(0);
+-                            base::error!(
+-                                "GH-SHIM: gave up: {} (error {:#x})",
+-                                String::from_utf8_lossy(&msg[..end]),
+-                                error,
+-                            );
+-                            return;
+-                        }
+-                        other => base::info!("GH-SHIM: status {:#x}", other),
+-                    }
+-                }
+-                std::thread::sleep(std::time::Duration::from_millis(10));
+-            }
+-            if last == 0 {
+-                base::error!(
+-                    "GH-SHIM: nothing was written to the handoff page in ten seconds -- the shim \
+-                     never ran, or never found it"
+-                );
+-            }
+-        })
+-        .map(|_| ())
+-        .unwrap_or_else(|e| base::warn!("GH-SHIM: could not watch the handoff page: {}", e));
+ }
+ 
+ /// Gunyah-specific runtime blob SHARE helpers, driven by `runtime_share`/`runtime_unshare`.
+@@ -1626,6 +1554,7 @@
+             blob_regions: self.blob_regions.clone(),
+             blob_pins: self.blob_pins.clone(),
+             guest_ram_pin: self.guest_ram_pin.clone(),
++            ram_transfer: self.ram_transfer.clone(),
+             routes: self.routes.clone(),
+             hv_cfg: self.hv_cfg,
+         })
+@@ -2047,6 +1976,7 @@
+     vcpu: File,
+     id: usize,
+     run_mmap: Arc<MemoryMapping>,
++    runtime_vm: Option<Box<GunyahVm>>,
+ }
+ 
+ struct GunyahVcpuSignalHandle {
+@@ -2082,6 +2012,7 @@
+             vcpu,
+             id: self.id,
+             run_mmap: self.run_mmap.clone(),
++            runtime_vm: self.runtime_vm.as_ref().map(|v| v.try_clone().map(Box::new)).transpose()?,
+         })
+     }
+ 
+@@ -2090,6 +2021,9 @@
+     }
+ 
+     fn run(&mut self) -> Result<VcpuExit> {
++        if let Some(vm) = self.runtime_vm.as_ref() {
++            if vm.advance_shared_ram()? { self.runtime_vm = None; }
++        }
+         // SAFETY:
+         // Safe because we know our file is a VCPU fd and we verify the return result.
+         let ret = unsafe { ioctl(self, GH_VCPU_RUN) };
+--- a/hypervisor/src/gunyah/shim_abi.rs
++++ b/hypervisor/src/gunyah/shim_abi.rs
+@@ -27,7 +27,7 @@
+ pub const SHIM_HEADER_MAGIC: u64 = 0x4d53_4856_554d_5644;
+ /// "MVSHANDO", little-endian.
+ pub const SHIM_HANDOFF_MAGIC: u64 = 0x4f44_4e41_4853_564d;
+-pub const SHIM_ABI_VERSION: u32 = 3;
++pub const SHIM_ABI_VERSION: u32 = 4;
+ 
+ /// The most parcels one window may be shared as. A window is one parcel unless something forces
+ /// it to be split, so this is headroom rather than a target: every parcel costs one of the 1024
+@@ -74,18 +74,20 @@
+ }
+ 
+ /// Host to shim, then shim to host, in memory the host shares rather than lends.
+-#[repr(C)]
++#[repr(C, align(64))]
+ #[derive(Clone, Copy, Debug)]
+ pub struct ShimHandoff {
+     pub magic: u64,
+     pub version: u32,
+     pub nparcels: u32,
+-    /// Written last by the host and read first by the shim. Everything above is only meaningful
+-    /// once it is non-zero; a shim that outran the host's sharing loop would otherwise accept a
+-    /// handle that is still zero.
++    /// Host publishes nparcels after the immutable record. ready becomes 1 only
++    /// after the guest has accepted every parcel of the complete RAM window.
+     pub ready: u64,
++    pub producer_padding: [u8; 40],
+     pub parcel: [ShimParcel; SHIM_MAX_PARCELS],
+-    // ---- the shim's answer ----
++    // Guest-owned cache lines never contain host-owned publication/parcel fields.
++    pub accepted: u32,
++    pub consumer_reserved: u32,
+     pub status: u64,
+     /// The resource manager's error code where there is one, so a refusal can be looked up rather
+     /// than guessed at.
+@@ -94,6 +96,7 @@
+     /// One line of plain text for the host to log. A boot that fails here has no console of its
+     /// own, so this is the only thing that can say why.
+     pub msg: [u8; 256],
++    pub consumer_padding: [u8; 32],
+ }
+ 
+ pub const SHIM_STATUS_RUNNING: u64 = 1;
+@@ -109,11 +112,15 @@
+             version: SHIM_ABI_VERSION,
+             nparcels: 0,
+             ready: 0,
++            producer_padding: [0; 40],
+             parcel: [ShimParcel::default(); SHIM_MAX_PARCELS],
++            accepted: 0,
++            consumer_reserved: 0,
+             status: 0,
+             error: 0,
+             exec_probe: 0,
+             msg: [0u8; 256],
++            consumer_padding: [0; 32],
+         }
+     }
+ }
+@@ -121,3 +128,22 @@
+ // Both consumers must keep the complete versioned handoff within 64 KiB of the existing 2 MiB handoff region.
+ const _: () = assert!(core::mem::size_of::<ShimHandoff>() <= 65536);
+ const _: () = assert!(core::mem::size_of::<ShimHeader>() == 64);
++
++/// Shared validation for the single outstanding parcel protocol.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum StreamError { Count, Order, Window, Completion }
++
++/// True means another parcel may be published. Stale acknowledgements wait.
++pub fn validate_stream(published: u32, accepted: u32, ready: u64) -> Result<bool, StreamError> {
++    if published as usize > SHIM_MAX_PARCELS { return Err(StreamError::Count); }
++    if accepted > published { return Err(StreamError::Order); }
++    if published - accepted > 1 { return Err(StreamError::Window); }
++    if ready > 1 || (ready == 1 && (accepted != published || published == 0)) {
++        return Err(StreamError::Completion);
++    }
++    Ok(accepted == published)
++}
++
++const _: () = assert!(core::mem::offset_of!(ShimHandoff, parcel) == 64);
++const _: () = assert!(core::mem::offset_of!(ShimHandoff, accepted) % 64 == 0);
++const _: () = assert!(core::mem::size_of::<ShimHandoff>() == 24960);
+--- a/droidvm-shim/src/start.S
++++ b/droidvm-shim/src/start.S
+@@ -17,7 +17,7 @@
+ 	.globl shim_header
+ shim_header:				// +0x08, struct ShimHeader
+ 	.quad	0x4d534856554d5644		// magic "DVMUVHSM"
+-	.word	3				// version
++	.word	4				// version
+ 	.word	0				// flags
+ 	.quad	0				// payload
+ 	.quad	0				// handoff
+--- a/droidvm-shim/src/main.rs
++++ b/droidvm-shim/src/main.rs
+@@ -194,79 +194,75 @@
+         die(0, "no payload address in the header")
+     }
+ 
+-    // `ready` is written last by the host, so NOTHING else on the page -- the parcel count
+-    // included -- means anything until it is set. The host sets it even when it has nothing to
+-    // hand over, so this wait is unconditional and reading the count comes after it.
++    // The device tree, for the two capability ids the accept needs. This is why the tree has
++    // to be parsed BEFORE the window exists: there is nowhere else those numbers come from.
++    //
++    // SAFETY: the hypervisor handed us this pointer, and the header it starts with says how
++    // long it is; every access past this point is bounds-checked against that length.
++    let blob = unsafe {
++        let len = match fdt_total_size(dtb) {
++            Some(l) => l,
++            None => die(0, "the device tree pointer is not a device tree"),
++        };
++        core::slice::from_raw_parts_mut(dtb, len)
++    };
++    let mut tree = match fdt::Fdt::new(blob) {
++        Ok(t) => t,
++        Err(_) => die(0, "the device tree header did not parse"),
++    };
++    let (at, len) = match tree.find_prop(
++        fdt::Match::Compatible("gunyah-resource-manager"),
++        "reg",
++    ) {
++        Ok(hit) => hit,
++        Err(_) => die(0, "no gunyah-resource-manager node in the device tree"),
++    };
++    if len < 16 {
++        die(len as u64, "the resource manager node's reg is too short")
++    }
++    let reg = tree.prop_bytes(at, 16).unwrap_or(&[]);
++    let tx = fdt::be64(&reg[0..8]).unwrap_or(0);
++    let rx = fdt::be64(&reg[8..16]).unwrap_or(0);
++    let mut rm = rm::Rm::new(tx, rx);
++    uart_str("SHIM: queue had ");
++    uart_hex(rm.drain() as u64);
++    uart_str(" stale messages\r\n");
++
++    uart_str("SHIM: rm tx ");
++    uart_hex(tx);
++    uart_str(" rx ");
++    uart_hex(rx);
++    uart_str("\r\n");
++
++    // The host publishes one immutable record, then waits for this acknowledgement.
++    // The UART checkpoint exits to the VMM, which advances its producer before
++    // running this vCPU again. No worker thread or additional guest capability.
++    let mut accepted = 0u32;
++    let mut total = 0u64;
++    let mut first_base = 0u64;
+     let mut spun = 0u64;
+-    while unsafe { ptr::read_volatile(ptr::addr_of!(h.ready)) } == 0 {
+-        spun += 1;
+-        if spun % 4096 == 0 {
+-            // The host's write is sitting in its own cache until something pushes it out, and
+-            // this loop is the only thing running that can.
+-            handoff_sync();
+-        }
+-        if spun > 200_000_000 {
+-            die(0, "the host never finished sharing the window")
+-        }
+-    }
+-    uart_str(" ready parcels=");
+-    uart_hex(h.nparcels as u64);
+-    uart_str("\r\n");
+-
+-    if h.nparcels > 0 {
+-        if h.nparcels as usize > SHIM_MAX_PARCELS {
+-            die(h.nparcels as u64, "more parcels than the handoff page can hold")
+-        }
+-
+-        // The device tree, for the two capability ids the accept needs. This is why the tree has
+-        // to be parsed BEFORE the window exists: there is nowhere else those numbers come from.
+-        //
+-        // SAFETY: the hypervisor handed us this pointer, and the header it starts with says how
+-        // long it is; every access past this point is bounds-checked against that length.
+-        let blob = unsafe {
+-            let len = match fdt_total_size(dtb) {
+-                Some(l) => l,
+-                None => die(0, "the device tree pointer is not a device tree"),
++    loop {
++        cache_flush(h as *const ShimHandoff as u64, 64);
++        let published = unsafe { ptr::read_volatile(ptr::addr_of!(h.nparcels)) };
++        let ready = unsafe { ptr::read_volatile(ptr::addr_of!(h.ready)) };
++        if validate_stream(published, accepted, ready).is_err() {
++            die(published as u64, "invalid streamed publication/acknowledgement")
++        }
++        if accepted < published {
++            let parcel_at = ptr::addr_of!(h.parcel[accepted as usize]);
++            cache_flush(parcel_at as u64, core::mem::size_of::<ShimParcel>());
++            let p = unsafe { ptr::read_volatile(parcel_at) };
++            if accepted == 0 { first_base = p.base; }
++            let expected = match first_base.checked_add(total) {
++                Some(v) => v, None => die(0, "streamed address overflow"),
+             };
+-            core::slice::from_raw_parts_mut(dtb, len)
+-        };
+-        let mut tree = match fdt::Fdt::new(blob) {
+-            Ok(t) => t,
+-            Err(_) => die(0, "the device tree header did not parse"),
+-        };
+-        let (at, len) = match tree.find_prop(
+-            fdt::Match::Compatible("gunyah-resource-manager"),
+-            "reg",
+-        ) {
+-            Ok(hit) => hit,
+-            Err(_) => die(0, "no gunyah-resource-manager node in the device tree"),
+-        };
+-        if len < 16 {
+-            die(len as u64, "the resource manager node's reg is too short")
+-        }
+-        let reg = tree.prop_bytes(at, 16).unwrap_or(&[]);
+-        let tx = fdt::be64(&reg[0..8]).unwrap_or(0);
+-        let rx = fdt::be64(&reg[8..16]).unwrap_or(0);
+-        let mut rm = rm::Rm::new(tx, rx);
+-        uart_str("SHIM: queue had ");
+-        uart_hex(rm.drain() as u64);
+-        uart_str(" stale messages\r\n");
+-
+-        uart_str("SHIM: rm tx ");
+-        uart_hex(tx);
+-        uart_str(" rx ");
+-        uart_hex(rx);
+-        uart_str("\r\n");
+-
+-        for i in 0..h.nparcels as usize {
+-            let p = h.parcel[i];
+-            uart_str("SHIM: accept handle ");
+-            uart_hex(p.handle as u64);
+-            uart_str(" at ");
+-            uart_hex(p.base);
+-            uart_str(" size ");
+-            uart_hex(p.size);
+-            uart_str("\r\n");
++            if p.handle == 0 || p.base != expected || p.size == 0 || p.size % (2 << 20) != 0 {
++                die(p.base, "invalid streamed parcel extent")
++            }
++            total = match total.checked_add(p.size) {
++                Some(v) if v <= (2u64 << 30) => v,
++                _ => die(p.size, "streamed window exceeds byte budget"),
++            };
+             match rm.mem_accept(p.handle, p.base, p.size) {
+                 Ok(()) => {}
+                 Err(rm::Error::Refused(code)) => {
+@@ -293,16 +289,29 @@
+                 }
+                 Err(rm::Error::Send(e)) => die(e, "could not send MEM_ACCEPT to the resource manager"),
+             }
+-        }
+-        h.status = SHIM_STATUS_ACCEPTED;
+-        handoff_sync();
+-        uart_str("SHIM: accepted\r\n");
+-
++            accepted += 1;
++            unsafe { ptr::write_volatile(ptr::addr_of_mut!(h.accepted), accepted) };
++            cache_flush(ptr::addr_of!(h.accepted) as u64, 64);
++            uart(b'.');
++            spun = 0;
++            continue;
++        }
++        if ready == 1 { break; }
++        spun += 1;
++        // A stale host observation must not leave both sides waiting without an exit.
++        if spun % 65536 == 0 { uart(b'~'); }
++        if spun > 200_000_000 { die(0, "streamed host publication timed out") }
++    }
++    h.status = SHIM_STATUS_ACCEPTED;
++    handoff_sync();
++    uart_str("\r\nSHIM: accepted streamed window\r\n");
++
++    {
+         if hdr.flags & SHIM_FLAG_PROBE_EXEC != 0 {
+             // The LAST page of the window, never the first: the payload is already sitting at the
+             // bottom of it, written there by the host before the VM started, and two instructions
+             // dropped on its head would be a boot failure with a very confusing signature.
+-            let p = h.parcel[h.nparcels as usize - 1];
++            let p = h.parcel[accepted as usize - 1];
+             uart_str("SHIM: exec probe\r\n");
+             h.exec_probe = probe_exec(p.base + p.size - 4096);
+             uart_str("SHIM: exec probe returned ");
+@@ -315,7 +324,7 @@
+             // order, so the total is the sum -- but only if they really do join up, and a gap
+             // would put memory in /memory that nobody accepted.
+             let mut total = 0u64;
+-            for i in 0..h.nparcels as usize {
++            for i in 0..accepted as usize {
+                 if h.parcel[i].base != h.parcel[0].base + total {
+                     die(h.parcel[i].base, "the parcels do not join up")
+                 }

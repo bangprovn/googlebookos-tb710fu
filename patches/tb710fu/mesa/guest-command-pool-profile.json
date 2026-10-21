@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "guest_kernel_release": "6.12.93-android16-6-g3a7d1771d492-ab16496487-4k",
+  "mesa_version": "25.0.7-2+deb13u1",
+  "stock_library_sha256": "35b776fa357b480586d6e69b4b6ed7fd6fd9115ee652325816095eca442bef47",
+  "library_sha256": "e240b41e0a0be35dc7f5426312cb4a863ca4f362f4cf7d338115363d596c715e",
+  "copyright_sha256": "55268f06fbc193ee1a4fe694045a9cec58ba727d74bb17b5b1d54de36873a038",
+  "command_pool_policy": "1m"
+}

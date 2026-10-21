@@ -1,0 +1,16 @@
+# All post-fs-data actions finish before queued zygote-start is processed.
+# APEX activation and perform_apex_config occur in the system post-fs-data
+# action. Complete this fixed mount before zygote/USAP namespaces are forked.
+# Do not gate this early event on a fingerprint that framework may derive later.
+# The worker checks immutable source AND destination VMM hashes before mounting;
+# the image recipe and flash controller separately pin the donor/device pair.
+on post-fs-data
+    exec_start gb-terminal-irq-boot
+
+service gb-terminal-irq-boot /system_ext/bin/gb-terminal-mount enable-irq
+    user root
+    group root
+    capabilities SYS_ADMIN
+    disabled
+    oneshot
+    timeout_period 15

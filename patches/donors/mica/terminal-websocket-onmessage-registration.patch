@@ -1,0 +1,72 @@
+--- a/assets/js/websocket_interceptor.js
++++ b/assets/js/websocket_interceptor.js
+@@ -66,24 +66,51 @@
+                     return origAddEventListener.call(this, type, listener, options);
+                 };
+ 
+-                let _onmessage = null;
+-                Object.defineProperty(instance, 'onmessage', {
+-                    get: function() { return _onmessage; },
+-                    set: function(fn) {
+-                        if (!fn) { _onmessage = null; return; }
+-                        _onmessage = function(event) {
+-                            var cleanData = sanitizeOscTitle(event.data);
+-                            var newEvent = new MessageEvent('message', {
+-                                data: cleanData,
+-                                origin: event.origin,
+-                                lastEventId: event.lastEventId,
+-                                source: event.source,
+-                                ports: event.ports
+-                            });
+-                            fn.call(this, newEvent);
+-                        };
+-                    }
+-                });
++                // Preserve the native EventTarget handler registration. An own
++                // accessor alone does not register a WebSocket message handler.
++                var proto = Object.getPrototypeOf(instance);
++                var nativeOnmessage;
++                while (proto && !nativeOnmessage) {
++                    nativeOnmessage = Object.getOwnPropertyDescriptor(proto, 'onmessage');
++                    proto = Object.getPrototypeOf(proto);
++                }
++                if (nativeOnmessage && typeof nativeOnmessage.get === 'function' &&
++                        typeof nativeOnmessage.set === 'function') {
++                    let assignedHandler = null;
++                    let registeredWrapper = null;
++                    Object.defineProperty(instance, 'onmessage', {
++                        configurable: true,
++                        enumerable: nativeOnmessage.enumerable,
++                        get: function() {
++                            const handler = nativeOnmessage.get.call(this);
++                            return registeredWrapper && handler === registeredWrapper ? assignedHandler : handler;
++                        },
++                        set: function(fn) {
++                            if (typeof fn !== 'function') {
++                                nativeOnmessage.set.call(this, fn);
++                                assignedHandler = null;
++                                registeredWrapper = null;
++                                return;
++                            }
++                            const wrapper = function(event) {
++                                var cleanData = sanitizeOscTitle(event.data);
++                                var newEvent = new MessageEvent('message', {
++                                    data: cleanData,
++                                    origin: event.origin,
++                                    lastEventId: event.lastEventId,
++                                    source: event.source,
++                                    ports: event.ports
++                                });
++                                fn.call(this, newEvent);
++                            };
++                            // Publish our identity only after the native setter
++                            // succeeds, preserving its exception semantics.
++                            nativeOnmessage.set.call(this, wrapper);
++                            assignedHandler = fn;
++                            registeredWrapper = wrapper;
++                        }
++                    });
++                }
+ 
+                 return instance;
+             }
