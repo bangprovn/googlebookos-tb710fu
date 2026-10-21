@@ -1,94 +1,126 @@
 # TB710FU Alpha 1 installation
 
-This is a manual tester build for the Lenovo TB710FU with 8 GB RAM, based on
-Googlebook `CL3B.260622.276.R2`. It contains the same signed image revisions used
-on the working development tablet. A clean installation from stock and a second
-tablet have not been tested.
+The installer prepares AVB metadata for the connected tablet. Release images are
+zero-index templates and must not be flashed directly. The development tablet's
+rollback values are not a release requirement.
 
-## Required starting point
+This build targets Lenovo **TB710FU**, Qualcomm SM8650Q, 8 GB RAM, with Android 16
+base `ZUI_17.5.04.059_260327_ROW` / `BP2A.250605.031.A3`. Other models and bases are
+unsupported. Clean installation on a second tablet remains untested.
 
-- Exact model **TB710FU**, Qualcomm SM8650Q / pineapple.
-- Matching Android 16 vendor base:
-  `ZUI_17.5.04.059_260327_ROW` / `BP2A.250605.031.A3`.
-- An unlocked bootloader for the fastboot procedure below, working fastbootd,
-  and an independently tested stock recovery procedure.
-- A complete backup of your own stock firmware and personal files.
-- Enough free host space for approximately 14 GB of images plus the downloads.
+## Requirements
 
-The development tablet's locked-bootloader test-key behavior is not a general
-installation method. Do not assume another unit accepts these keys. EDL needs
-an appropriate programmer obtained separately; no programmer or blind sector
-flasher is included.
+- An unlocked bootloader and working fastboot/fastbootd partition readback.
+- Your own complete stock firmware backup and an independently tested recovery
+  method. The installer's three AVB readbacks are not a complete stock backup.
+- Rust stable 1.88 or newer, Python 3, OpenSSL on PATH, and Android platform-tools.
+- On Windows, the appropriate USB driver and Rust's native build prerequisites.
+- Separately obtained, authorized development signing keys matching the template
+  public keys. No private signing keys or EDL programmer are distributed here.
+- Approximately 15 GB of free host space, in addition to the downloaded assets.
 
-These images carry AVB rollback index **4070908801**, with flags **0**. Review
-your device's rollback state before installing. A higher committed index can
-prevent returning to an older stock image. Do not disable rollback checks,
-change AVB flags, or relock a bootloader around this build.
+Linux and macOS use `scripts/install/install.sh`. Windows uses
+`scripts\install\install.cmd` or the PowerShell launcher alongside it. The
+launchers build the Rust installer when a matching local binary is unavailable.
+Windows and macOS launchers do not require WSL or a Linux VM. Native USB flashing
+has not yet been qualified on those hosts.
 
-## Check and unpack
+The Alpha 1 template keys are the public AOSP AVB development reference keys.
+Their source is the [AOSP AVB test-data directory](https://android.googlesource.com/platform/external/avb/+/refs/tags/android-16.0.0_r1/test/data/)
+(`testkey_rsa4096.pem` and `testkey_rsa2048.pem`). They are development keys,
+not OEM release credentials. The installer checks that the selected keys match
+the templates; it does not replace the chain with arbitrary keys.
 
-Download all release assets into one directory, including the nine `.img.gz`
-images, `kernel-source.tar.gz`, manifests, checksum lists and release documents.
-`SHA256SUMS` covers all of them except the checksum list itself.
+## Download and prepare
 
-```sh
-sha256sum -c SHA256SUMS
-gzip -dk -- *.img.gz
-sha256sum -c IMAGES_SHA256SUMS
-```
+Download all assets from the published release into one directory. Check the
+release's `SHA256SUMS` before using the package. Keep the `.img.gz` files
+compressed; the installer verifies and extracts them into a new work directory.
+A source announcement or GitHub draft is not a published firmware download.
 
-Both checksum checks must pass. Each image is a raw partition image, not an OTA
-ZIP or an Android sparse image. Do not copy an `.img.gz` file to a partition.
+Put the tablet in fastboot/fastbootd with slot A active. The installer accepts
+only a device reporting product `TB710FU`, an unlocked bootloader and slot A.
+It refuses ambiguous identity, unsupported readback and incompatible retained
+AVB descriptors. If the bootloader reports a generic product instead, stop;
+a verified device-identification adapter is required before installation.
 
-## Review the partition plan
-
-The package targets **slot A only**. Confirm the active slot, stock firmware
-and partition sizes independently before writing. The image sizes are recorded
-in `manifest.json`; they must fit the existing partitions exactly.
-
-Keep stock `recovery_a`, `dtbo_a`, `odm_a`, `system_dlkm_a`, `vendor_dlkm_a` and
-`pvmfw_a`. Keep the modem, bootloader, calibration/persist, metadata and all slot
-B partitions. The package relies on those matching stock components.
-
-The following commands are a manual plan, not a tested installer. Replace
-`SERIAL` with the fastboot serial of your tablet. Stop on any failed command,
-unknown lock state, mismatched base or unexpected partition layout.
+On Linux or macOS, from the source checkout:
 
 ```sh
-fastboot -s SERIAL getvar unlocked
-fastboot -s SERIAL getvar current-slot
-fastboot -s SERIAL reboot fastboot
-fastboot -s SERIAL getvar is-userspace
-
-# In fastbootd, after confirming the sizes of each logical partition:
-fastboot -s SERIAL flash system_a system.img
-fastboot -s SERIAL flash product_a product.img
-fastboot -s SERIAL flash system_ext_a system_ext.img
-fastboot -s SERIAL flash vendor_a vendor.img
-
-fastboot -s SERIAL reboot bootloader
-fastboot -s SERIAL flash boot_a boot.img
-fastboot -s SERIAL flash init_boot_a init_boot.img
-fastboot -s SERIAL flash vendor_boot_a vendor_boot.img
-fastboot -s SERIAL flash vbmeta_system_a vbmeta_system.img
-fastboot -s SERIAL flash vbmeta_a vbmeta.img
-fastboot -s SERIAL --set-active=a
+./scripts/install/install.sh prepare \
+  --package /path/to/downloaded-release \
+  --work /path/to/new-install-work \
+  --serial YOUR_FASTBOOT_SERIAL \
+  --root-key /path/to/authorized-rsa4096.pem \
+  --system-key /path/to/authorized-rsa2048.pem \
+  --avbtool third_party/avb/avbtool.py
 ```
 
-Do not reboot between partial image writes. Do not run these commands on another
-model or use them to infer compatibility with another Lenovo firmware version.
+On Windows, in Command Prompt:
 
-## First boot and recovery
+```bat
+scripts\install\install.cmd prepare ^
+  --package "C:\ROM\download" ^
+  --work "C:\ROM\new-install-work" ^
+  --serial YOUR_FASTBOOT_SERIAL ^
+  --root-key "C:\Keys\authorized-rsa4096.pem" ^
+  --system-key "C:\Keys\authorized-rsa2048.pem" ^
+  --avbtool third_party\avb\avbtool.py ^
+  --python python
+```
 
-A clean installation from stock requires a factory reset, which erases personal
-data. Perform that reset through the matching stock recovery after backing up;
-this package does not format anything automatically. An in-place update from
-an earlier port build has separate data-compatibility risks and is not covered
-by the clean-install plan.
+Preparation reads `vbmeta_a`, `vbmeta_system_a` and `boot_a` from that tablet.
+It copies each image's own rollback value separately, using the root chain's
+location mapping. It does not add one, substitute a release-wide number, or
+write rollback storage. Values and readback hashes stay in the local work
+folder. Unknown values cause preparation to stop.
 
-Complete Android setup normally. Terminal runs with 2 GiB RAM even if its menu
-shows 4 GB. See `KNOWN_ISSUES.md` before testing Phone Link or guest graphics.
-There is no supported port OTA channel; do not install donor hardware OTAs.
+The pinned AOSP `avbtool.py` re-signs copies of the three template containers.
+OpenSSL verifies signatures; the installer checks unchanged payload bytes,
+descriptors, public keys, AVB flags and locations. Firmware inputs and original
+readbacks remain intact. Preparation does not flash or reboot the device.
+
+These are **image-declared indices**, not a readout of protected rollback
+storage. The protected floors remain unknown. Standard fastboot has no universal
+command for reading them, and many devices cannot fetch these partitions.
+An unsupported readback is a blocker, not permission to guess. Already committed
+rollback increases cannot be undone by this installer. See the
+[AOSP AVB rollback documentation](https://android.googlesource.com/platform/external/avb/+/refs/heads/main/README.md#Rollback-Protection).
+
+## Review and flash
+
+Review `install-plan.json`, particularly the device serial, rollback locations,
+readback hashes and nine output images. Preview the commands first:
+
+```sh
+./scripts/install/install.sh flash \
+  --work /path/to/new-install-work --serial YOUR_FASTBOOT_SERIAL
+```
+
+On Windows, use `scripts\install\install.cmd flash` with the same arguments.
+This preview performs no device operations. Add `--execute` only when ready to
+write. The installer rechecks the device and image integrity and asks you to
+type `FLASH YOUR_FASTBOOT_SERIAL` before writing anything.
+
+The plan writes `system_a`, `product_a`, `system_ext_a`, `vendor_a`, `boot_a`,
+`init_boot_a`, `vendor_boot_a`, `vbmeta_system_a` and `vbmeta_a`. It preserves
+stock recovery, DTBO, ODM, module partitions, pvmfw, modem, bootloader,
+calibration/persist, metadata and every slot B partition. Partition resizing is
+not automatic. A size mismatch blocks installation.
+
+The installer records progress in `flash-journal.json`. A failed command stops
+the process; it does not reboot a partial installation or blindly replay a
+previous attempt. Inspect the journal and use your tested recovery procedure.
+
+## First boot
+
+After a complete write, the tablet remains in bootloader fastboot. A clean
+installation requires a factory reset through matching stock recovery after
+backing up personal data. The installer does not format userdata, unlock or
+relock the bootloader, disable verification, or reboot automatically to Android.
+
+Complete setup normally. Terminal receives 2 GiB RAM even if its menu shows 4 GB.
+Read `KNOWN_ISSUES.md`; do not install donor hardware OTAs.
 
 If an EDL reset starts only the headless system user, authenticated ADB can
 select the existing main user, followed by the owner's normal unlock:
@@ -98,10 +130,6 @@ adb -s SERIAL shell cmd user get-main-user
 adb -s SERIAL shell am switch-user MAIN_USER_ID
 ```
 
-Do not create another user or bypass the owner's lock screen as a workaround.
-
-For a failed boot, return to the recovery mode you tested before installation.
-Restore a complete, mutually compatible stock image set from your own backup,
-subject to the device's actual rollback state. Do not restore random individual
-vbmeta or boot images. If recovery is unavailable or rollback compatibility is
-unknown, stop before writing more partitions.
+For recovery, restore a complete, compatible stock image set from your own
+backup, subject to the device's actual rollback state. Do not restore unrelated
+individual vbmeta or boot images.

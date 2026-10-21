@@ -51,7 +51,8 @@ Earlier hardware results have not all been repeated after the R2 factory reset.
 Bluetooth pairing/audio, external display, stylus and deep suspend/resume are
 not fully tested. They are separate from the working features above.
 
-Alpha 1 is being prepared for testers on the matching Android 16 stock base.
+Alpha 1 is being updated to use device-specific AVB preparation on the matching
+Android 16 stock base.
 Read the [installation plan](releases/alpha1/INSTALL.md) and
 [release notes](releases/alpha1/KNOWN_ISSUES.md). Clean installation on a second
 tablet has not been tested. There is no one-command port to another device.
@@ -71,6 +72,22 @@ Firmware processing also needs separately installed Android image tools.
 Each image recipe specifies its tool paths, checksums and sandbox settings.
 The project uses tools such as `avbtool`, `mkfs.erofs`, `fsck.erofs` and
 `mkbootimg` rather than replacing them with custom filesystem writers.
+
+## Install on TB710FU
+
+The device installer has launchers for Windows, Linux and macOS:
+`scripts/install/install.cmd`, `install.ps1` and `install.sh`.
+
+It reads the connected tablet's AVB images, uses that tablet's rollback values
+separately for each chain location, and re-signs local copies before flashing.
+Release templates must be personalized; do not flash them directly. A command
+preview is the default, and writing requires an explicit option plus typed
+confirmation. Unsupported device readback stops the process.
+
+Read the [installation guide](releases/alpha1/INSTALL.md) for host dependencies,
+keys, exact stock-base requirements and the current testing limits. The public
+installer requires an unlocked bootloader. Protected rollback floors cannot be
+inferred from an image header and are reported as unknown.
 
 ## Inspect firmware
 
@@ -128,6 +145,13 @@ revisions; do not apply the series blindly to another kernel or tablet.
 Host tests cover parsers, manifests, compatibility rules, cache behavior and
 patch contracts. Hardware tests require the tablet and external firmware inputs.
 Some integration tests are ignored by default for that reason.
+The installer also has signed-image tests with a simulated USB backend:
+
+```sh
+cargo test --locked -p gb-installer --test device_install -- --ignored
+```
+
+Those tests require Python 3 and OpenSSL; they never access a physical USB device.
 
 The main CLI's `gb flash plan` previews changes; it does not flash the tablet.
 Keep a stock backup and a tested recovery path before attempting installation.

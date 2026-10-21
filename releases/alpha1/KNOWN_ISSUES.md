@@ -36,4 +36,7 @@ BLE scan, sensor event or battery API call is not full qualification of a featur
 
 Alpha 1 has not been clean-installed on a second tablet. Use the exact stock
 base and keep your own recovery backup. The supplied documents describe a manual
-installation plan; they do not certify the flashing procedure on other units.
+installation workflow; they do not certify the flashing procedure on other units.
+The Windows, Linux and macOS launchers share a Rust installer. Device readback
+and native USB behavior still need physical qualification; unsupported readback
+blocks preparation. Image-declared indices do not establish protected floors.
