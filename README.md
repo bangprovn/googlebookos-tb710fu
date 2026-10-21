@@ -21,6 +21,7 @@ installation as well.
 | Feature | Status |
 | --- | --- |
 | Desktop and tablet interaction | Working on TB710FU. |
+| Touchscreen | Working for setup and desktop interaction. |
 | Android setup | Owner confirms setup completes after a factory reset on R2. |
 | Camera | Owner confirms it works; both cameras passed earlier frame-delivery tests. |
 | Microphone | Owner confirms it works; earlier speaker/microphone pattern tests passed. |
