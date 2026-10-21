@@ -12,24 +12,48 @@ This repository contains the Rust tools, device profile, kernel changes and
 userspace patches. Firmware images, proprietary apps and libraries, signing
 keys, and EDL programmers are not included.
 
-## Status
+## Working features
 
-| Feature | Current state |
+Googlebook OS boots on the tablet with the desktop, Android setup and the
+original Terminal app. Camera and microphone are working in the owner's R2
+installation as well.
+
+| Feature | Status |
 | --- | --- |
-| Googlebook desktop | Boots on the TB710FU. |
-| Android setup | Owner reports successful setup after a factory reset on R2. |
-| Terminal / Debian VM | Boots and runs commands with 2 GiB RAM. |
-| Terminal after reset | Firmware maps the app's 4 GiB default request to 2 GiB. The app's settings may still show 4 GB. |
-| Guest graphics | Partial. Earlier builds passed GLES and limited Vulkan tests; resize and resume still need work. These results have not all been repeated on R2. |
-| Phone Link | Device discovery is not working. |
-| Suspend, accessories and long-running workloads | Not fully tested. |
+| Desktop and tablet interaction | Working on TB710FU. |
+| Android setup | Owner confirms setup completes after a factory reset on R2. |
+| Camera | Owner confirms it works; both cameras passed earlier frame-delivery tests. |
+| Microphone | Owner confirms it works; earlier speaker/microphone pattern tests passed. |
+| Built-in speakers | Playback passed earlier device tests. |
+| Wi-Fi / Internet | Validated Wi-Fi and HTTPS worked in earlier device tests. |
+| Sensors | Accelerometer, gyroscope, light, game rotation, gravity and linear acceleration delivered events. |
+| USB / ADB | Authenticated ADB and development transfers work. |
+| Terminal / Debian VM | Boots and runs commands with 2 GiB RAM on R2. |
+| Terminal after reset | Firmware maps the app's fresh 4 GiB request to 2 GiB. The menu may still show 4 GB. |
 
-The latest Terminal change was checked with the original app requesting 4 GiB:
+The latest memory change was checked with the original app requesting 4 GiB:
 the adapter selected 2 GiB, and a command inside Debian confirmed the allocation.
-No additional data wipe was performed for that check.
+Earlier hardware results have not all been repeated after the R2 factory reset.
 
-This is a development port for one tablet, not a supported daily-driver ROM.
-There is no ready-to-flash release or one-command port to another device.
+## Known issues
+
+- **Phone Link:** device discovery does not find the peer phone.
+- **VM graphics:** GLES and limited Vulkan tests passed on earlier builds;
+  broader native presentation, resizing and resume still need fixes.
+- **Terminal lifecycle:** a rapid forced stop/restart can hit a resource-busy
+  error until teardown finishes. Its memory menu can still display 4 GB.
+- **User selection:** some EDL resets require selecting the existing main user.
+- **Google services:** donor-specific Perks/serviceability is unsupported;
+  Play certification is not established.
+- **Updates:** there is no port OTA channel. Do not install donor hardware OTAs.
+
+Bluetooth pairing/audio, external display, stylus and deep suspend/resume are
+not fully tested. They are separate from the working features above.
+
+Alpha 1 is being prepared for testers on the matching Android 16 stock base.
+Read the [installation plan](releases/alpha1/INSTALL.md) and
+[release notes](releases/alpha1/KNOWN_ISSUES.md). Clean installation on a second
+tablet has not been tested. There is no one-command port to another device.
 
 ## Build the tools
 

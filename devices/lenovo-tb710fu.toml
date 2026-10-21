@@ -24,11 +24,17 @@ test_key_acceptance = { status = "observed", value = true, evidence = "Developme
 rollback_requirement = { status = "unknown", evidence = "Read the target AVB metadata and rollback locations before preparing images." }
 
 [features]
+camera = { status = "user_reported", value = true, evidence = "Owner confirms camera works on R2; both cameras also passed earlier frame-delivery tests." }
+microphone = { status = "user_reported", value = true, evidence = "Owner confirms microphone works on R2; earlier known-pattern recording tests passed." }
+speaker = { status = "observed", value = true, evidence = "Built-in speaker playback passed earlier device tests; not fully requalified after R2 reset." }
+wifi = { status = "observed", value = true, evidence = "Validated Wi-Fi and default-trust HTTPS passed earlier device tests." }
+usb_adb = { status = "observed", value = true, evidence = "Authenticated ADB and development transfers worked on the installed R2 build." }
+sensors = { status = "observed", value = true, evidence = "Six exposed sensor streams passed earlier event-delivery tests; calibration and physical orientation remain unqualified." }
 desktop_mode = { status = "observed", value = true, evidence = "Googlebook desktop boots on the tested TB710FU." }
 terminal_vm = { status = "observed", value = true, evidence = "Original Terminal boots Debian and executes commands with 2 GiB RAM on R2." }
 terminal_reset_memory_policy = { status = "observed", value = true, evidence = "Immutable adapter maps the original app's 4096 MiB request to 2048 MiB; a guest command verified the effective allocation." }
 phone_link = { status = "observed", value = false, evidence = "Device discovery does not find the peer phone." }
-touchscreen = { status = "unknown", evidence = "Full input regression coverage remains incomplete." }
+touchscreen = { status = "user_reported", value = true, evidence = "Owner uses setup and desktop interaction; full input and stylus regression coverage remains incomplete." }
 stylus = { status = "unknown" }
 external_display = { status = "unknown" }
 suspend_resume = { status = "unknown" }

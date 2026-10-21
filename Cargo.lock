@@ -400,6 +400,7 @@ name = "gb-build"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "flate2",
  "fs2",
  "gb-avb",
  "gb-boot",

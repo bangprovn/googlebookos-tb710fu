@@ -21,6 +21,7 @@ use std::{
 pub mod delta;
 pub mod public_export;
 pub mod range_delta;
+pub mod rom_release;
 pub mod super_image;
 pub fn init_diagnostic_cached(
     request: &gb_boot::diagnostic::Request,
