@@ -35,8 +35,9 @@ regulation and long mixed workloads still need end-to-end testing. A successful
 BLE scan, sensor event or battery API call is not full qualification of a feature.
 
 Alpha 1 has not been clean-installed on a second tablet. Use the exact stock
-base and keep your own recovery backup. The supplied documents describe a manual
-installation workflow; they do not certify the flashing procedure on other units.
-The Windows, Linux and macOS launchers share a Rust installer. Device readback
-and native USB behavior still need physical qualification; unsupported readback
-blocks preparation. Image-declared indices do not establish protected floors.
+base and keep your own recovery backup. The EDL-only installer uses the
+readback/sector-write/digest method used during development, with per-device GPT/LP discovery and AVB personalization. The Rust
+and Python paths have offline tests; native Windows/macOS USB and installation
+on a second physical tablet remain unqualified. A matching stock programmer,
+stock base, active slot A and an accepted signing chain are prerequisites.
+Image-declared indices do not establish protected rollback floors.

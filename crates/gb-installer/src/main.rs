@@ -1,6 +1,6 @@
 use anyhow::{Result, ensure};
 use clap::{Args, Parser, Subcommand};
-use gb_installer::{Fastboot, Prepare, avb::Tools};
+use gb_installer::{Prepare, avb::Tools, edl::Edl};
 use std::{
     io::{self, Write},
     path::PathBuf,
@@ -8,25 +8,49 @@ use std::{
 #[derive(Parser)]
 #[command(
     name = "gb-install",
-    about = "TB710FU device-specific AVB preparation and explicit flashing"
+    about = "TB710FU EDL readback, per-device AVB preparation and explicit installation"
 )]
 struct Cli {
     #[command(subcommand)]
     command: Command,
 }
 #[derive(Args)]
-struct Signing {
+struct Transport {
+    /// Clean bkerler/edl checkout directory at the documented pinned revision.
+    #[arg(long)]
+    edl_client: PathBuf,
+    /// Qualified stock xbl_s_devprg_ns.melf; never downloaded automatically.
+    #[arg(long)]
+    loader: PathBuf,
+    /// Python environment with the EDL client's dependencies installed.
     #[arg(long, default_value = "python3")]
     python: PathBuf,
+    /// Optional full path to a libusb-1.0 DLL/shared library.
+    #[arg(long)]
+    libusb: Option<PathBuf>,
+}
+impl Transport {
+    fn edl(&self, serial: String) -> Edl {
+        Edl {
+            python: self.python.clone(),
+            client: self.edl_client.clone(),
+            loader: self.loader.clone(),
+            libusb: self.libusb.clone(),
+            serial,
+        }
+    }
+}
+#[derive(Args)]
+struct Signing {
     #[arg(long)]
     avbtool: PathBuf,
     #[arg(long, default_value = "openssl")]
     openssl: PathBuf,
 }
 impl Signing {
-    fn tools(&self) -> Tools {
+    fn tools(&self, python: &std::path::Path) -> Tools {
         Tools {
-            python: self.python.clone(),
+            python: python.into(),
             avbtool: self.avbtool.clone(),
             openssl: self.openssl.clone(),
         }
@@ -34,16 +58,22 @@ impl Signing {
 }
 #[derive(Subcommand)]
 enum Command {
-    /// Read this device's AVB images and prepare signed copies. No firmware writes.
+    /// Read UFS identity over EDL. Connect exactly one 05c6:9008 device.
+    Probe {
+        #[command(flatten)]
+        transport: Transport,
+    },
+    /// Read GPT/LP and AVB; prepare device-specific images. No persistent writes or reset.
     Prepare {
         #[arg(long)]
         package: PathBuf,
         #[arg(long)]
         work: PathBuf,
+        /// UFS storage serial from probe, not the Android ADB serial.
         #[arg(long)]
         serial: String,
-        #[arg(long, default_value = "fastboot")]
-        fastboot: PathBuf,
+        #[command(flatten)]
+        transport: Transport,
         #[arg(long)]
         root_key: PathBuf,
         #[arg(long)]
@@ -51,18 +81,34 @@ enum Command {
         #[command(flatten)]
         signing: Signing,
     },
-    /// Preview the prepared commands. --execute additionally requires a typed confirmation.
+    /// Offline preview. --execute additionally needs EDL options and typed confirmation.
     Flash {
         #[arg(long)]
         work: PathBuf,
         #[arg(long)]
         serial: String,
-        #[arg(long, default_value = "fastboot")]
-        fastboot: PathBuf,
         #[arg(long)]
         execute: bool,
+        // Optional only so a dry run never needs USB or host EDL dependencies.
+        #[arg(long)]
+        edl_client: Option<PathBuf>,
+        #[arg(long)]
+        loader: Option<PathBuf>,
+        #[arg(long, default_value = "python3")]
+        python: PathBuf,
+        #[arg(long)]
+        libusb: Option<PathBuf>,
     },
-    /// Release maintainer: create a zero-index template copy, never an installable final image.
+    /// Explicit EDL reset after a fully digest-verified flash. No automatic reset on errors.
+    Reset {
+        #[arg(long)]
+        work: PathBuf,
+        #[arg(long)]
+        serial: String,
+        #[command(flatten)]
+        transport: Transport,
+    },
+    /// Maintainer: make a zero-index template copy, never an installable final image.
     Template {
         #[arg(long)]
         image: PathBuf,
@@ -70,6 +116,8 @@ enum Command {
         output: PathBuf,
         #[arg(long)]
         key: PathBuf,
+        #[arg(long, default_value = "python3")]
+        python: PathBuf,
         #[command(flatten)]
         signing: Signing,
     },
@@ -77,90 +125,91 @@ enum Command {
 fn main() -> Result<()> {
     ctrlc::set_handler(|| gb_core::CANCELLED.store(true, std::sync::atomic::Ordering::Relaxed))?;
     match Cli::parse().command {
+        Command::Probe { transport } => println!(
+            "{}",
+            serde_json::to_string_pretty(&transport.edl(String::new()).probe()?)?
+        ),
         Command::Prepare {
             package,
             work,
             serial,
-            fastboot,
+            transport,
             root_key,
             system_key,
             signing,
         } => {
-            let fb = Fastboot {
-                program: fastboot,
-                serial,
-            };
-            match gb_installer::prepare(Prepare {
+            let plan = gb_installer::prepare(Prepare {
                 package: &package,
                 work: &work,
-                fastboot: &fb,
-                tools: &signing.tools(),
+                device: &transport.edl(serial),
+                tools: &signing.tools(&transport.python),
                 root_key: &root_key,
                 system_key: &system_key,
-            }) {
-                Ok(plan) => {
-                    println!("{}", serde_json::to_string_pretty(&plan)?);
-                    println!(
-                        "Prepared only. Review install-plan.json; firmware has not been flashed."
-                    );
-                }
-                Err(error) => {
-                    eprintln!("Preparation blocked; firmware was not flashed. {error:#}");
-                    return Err(error);
-                }
-            }
+            })?;
+            println!("{}", serde_json::to_string_pretty(&plan)?);
+            println!(
+                "Prepared only; no persistent firmware writes or reset. Review install-plan.json and keep a complete stock backup."
+            );
         }
         Command::Flash {
             work,
             serial,
-            fastboot,
             execute,
+            edl_client,
+            loader,
+            python,
+            libusb,
         } => {
             let plan = gb_installer::load_plan(&work)?;
-            ensure!(plan.serial == serial, "plan belongs to a different serial");
-            for args in gb_installer::commands(&plan, &work) {
-                println!(
-                    "{}",
-                    serde_json::to_string(
-                        &serde_json::json!({"program":fastboot,"args":([vec!["-s".to_owned(),serial.clone()],args].concat())})
-                    )?
-                );
+            ensure!(plan.serial == serial, "plan belongs to another UFS serial");
+            for step in gb_installer::commands(&plan, &work) {
+                println!("{}", serde_json::to_string(&step)?);
             }
             if execute {
-                gb_installer::flash(
-                    &work,
-                    &Fastboot {
-                        program: fastboot,
-                        serial,
-                    },
-                    |p| {
-                        println!(
-                            "This writes nine slot-A partitions on {}. Keep your stock backup and recovery method ready. No userdata formatting, relocking or automatic system reboot is performed.",
-                            p.serial
-                        );
-                        print!("Type FLASH {} to proceed: ", p.serial);
-                        io::stdout().flush()?;
-                        let mut answer = String::new();
-                        io::stdin().read_line(&mut answer)?;
-                        Ok(answer.trim() == format!("FLASH {}", p.serial))
-                    },
-                )?;
+                let device = Edl {
+                    python,
+                    client: edl_client
+                        .ok_or_else(|| anyhow::anyhow!("--execute requires --edl-client"))?,
+                    loader: loader.ok_or_else(|| anyhow::anyhow!("--execute requires --loader"))?,
+                    libusb,
+                    serial,
+                };
+                gb_installer::flash(&work, &device, |p| {
+                    println!(
+                        "This overwrites nine slot-A images on UFS {}. Have a complete stock backup and recovery method ready. GPT, LP metadata, slot B and userdata are preserved; there is no automatic reboot.",
+                        p.serial
+                    );
+                    print!("Type FLASH {} to proceed: ", p.serial);
+                    io::stdout().flush()?;
+                    let mut answer = String::new();
+                    io::stdin().read_line(&mut answer)?;
+                    Ok(answer.trim() == format!("FLASH {}", p.serial))
+                })?;
                 println!(
-                    "Images written. Use the documented stock-recovery procedure; boot and hardware validation remain required."
+                    "Nine images written and device SHA-256 verified. Use the separate reset command when ready; runtime validation remains required."
                 );
             } else {
                 println!(
-                    "Dry run only. Add --execute for device rechecks and an interactive confirmation."
+                    "Dry run only; no EDL connection. --execute requires transport options and typed confirmation."
                 );
             }
+        }
+        Command::Reset {
+            work,
+            serial,
+            transport,
+        } => {
+            gb_installer::reset(&work, &transport.edl(serial))?;
+            println!("EDL reset sent.");
         }
         Command::Template {
             image,
             output,
             key,
+            python,
             signing,
         } => {
-            signing.tools().resign(&image, &output, &key, 0)?;
+            signing.tools(&python).resign(&image, &output, &key, 0)?;
             ensure!(
                 gb_installer::avb::payload_equal(&image, &output)?,
                 "payload changed"

@@ -1,7 +1,10 @@
 //! Device-bound installation. Preparation reads firmware; flashing is explicit.
 pub mod avb;
+pub mod edl;
+pub mod layout;
 use anyhow::{Context, Result, ensure};
 use avb::{Metadata, Tools};
+use edl::Device;
 use flate2::read::GzDecoder;
 use gb_core::{checkpoint, hash_file, run_tool};
 use serde::{Deserialize, Serialize};
@@ -11,7 +14,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File},
     io::{Read, Write},
-    path::{Path, PathBuf},
+    path::Path,
     time::Duration,
 };
 
@@ -66,6 +69,8 @@ pub struct Plan {
     pub device: String,
     pub serial: String,
     pub slot: String,
+    pub layout: layout::Layout,
+    pub writes: BTreeMap<String, edl::Range>,
     pub images: BTreeMap<String, Image>,
     pub backups: BTreeMap<String, Image>,
     pub rollback: BTreeMap<String, Rollback>,
@@ -73,87 +78,6 @@ pub struct Plan {
     pub firmware_written: bool,
     pub runtime_verified: bool,
     pub limitations: Vec<String>,
-}
-#[derive(Debug, Clone)]
-pub struct Fastboot {
-    pub program: PathBuf,
-    pub serial: String,
-}
-impl Fastboot {
-    pub fn run(&self, args: &[String], timeout: u64) -> Result<String> {
-        let mut all = vec!["-s".into(), self.serial.clone()];
-        all.extend_from_slice(args);
-        let r = run_tool(&self.program, &all, Duration::from_secs(timeout))?;
-        Ok(format!("{}\n{}", r.stdout, r.stderr))
-    }
-    pub fn get(&self, name: &str) -> Result<String> {
-        parse_getvar(name, &self.run(&["getvar".into(), name.into()], 15)?)
-    }
-    pub fn identify(&self) -> Result<()> {
-        ensure!(
-            !self.serial.is_empty()
-                && self.serial.len() <= 128
-                && self
-                    .serial
-                    .bytes()
-                    .all(|c| c.is_ascii_alphanumeric() || b"_.:-".contains(&c)),
-            "invalid explicit device serial"
-        );
-        ensure!(
-            self.get("product")? == "TB710FU",
-            "fastboot does not identify this device as TB710FU; no other product is accepted"
-        );
-        ensure!(
-            matches!(self.get("unlocked")?.as_str(), "yes" | "true"),
-            "an explicitly unlocked bootloader is required; no test-key acceptance exploit is used"
-        );
-        ensure!(
-            self.get("current-slot")? == "a",
-            "this installer supports current slot A only; slot B remains untouched"
-        );
-        Ok(())
-    }
-    pub fn fetch(&self, name: &str, out: &Path, limit: u64) -> Result<()> {
-        let size = parse_size(&self.get(&format!("partition-size:{name}_a"))?)?;
-        ensure!(
-            size > 0 && size <= limit,
-            "device partition exceeds bounded readback size"
-        );
-        self.run(&["fetch".into(),format!("{name}_a"),out.display().to_string()],120).context("device cannot read back the required AVB image using fastboot fetch; use a supported readback/recovery workflow before installing; no index will be guessed")?;
-        ensure!(
-            fs::symlink_metadata(out)?.file_type().is_file() && fs::metadata(out)?.len() == size,
-            "incomplete or non-regular device readback"
-        );
-        Ok(())
-    }
-}
-pub fn parse_getvar(name: &str, text: &str) -> Result<String> {
-    let prefix = format!("{name}:");
-    let mut values = BTreeSet::new();
-    for line in text.lines() {
-        let line = line
-            .trim()
-            .strip_prefix("(bootloader)")
-            .unwrap_or(line.trim())
-            .trim();
-        if let Some(v) = line.strip_prefix(&prefix) {
-            let v = v.trim();
-            ensure!(!v.is_empty(), "empty fastboot variable {name}");
-            values.insert(v.to_owned());
-        }
-    }
-    ensure!(
-        values.len() == 1,
-        "missing or ambiguous fastboot variable {name}"
-    );
-    values.into_iter().next().context("missing variable")
-}
-pub fn parse_size(text: &str) -> Result<u64> {
-    if let Some(v) = text.strip_prefix("0x") {
-        Ok(u64::from_str_radix(v, 16)?)
-    } else {
-        Ok(text.parse()?)
-    }
 }
 pub fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
     let parent = path.parent().unwrap_or(Path::new("."));
@@ -335,7 +259,7 @@ pub fn select_rollback(
 pub struct Prepare<'a> {
     pub package: &'a Path,
     pub work: &'a Path,
-    pub fastboot: &'a Fastboot,
+    pub device: &'a dyn Device,
     pub tools: &'a Tools,
     pub root_key: &'a Path,
     pub system_key: &'a Path,
@@ -362,7 +286,9 @@ pub fn prepare(r: Prepare<'_>) -> Result<Plan> {
             && manifest.metadata["installation"]["requires_device_personalization"] == true,
         "release is not a device-personalized TB710FU template package; old ready-to-flash packages are refused"
     );
-    r.fastboot.identify()?;
+    let tool_identity = r.device.tools()?;
+    let identity = r.device.identity()?;
+    identity.validate()?;
     let parent = r
         .work
         .parent()
@@ -385,19 +311,26 @@ pub fn prepare(r: Prepare<'_>) -> Result<Plan> {
     let backups = staging.path().join("device-backup");
     fs::create_dir(&images)?;
     fs::create_dir(&backups)?;
+    let layout = layout::capture(r.device, &backups)?;
+    ensure!(
+        layout.identity == identity,
+        "device identity changed during discovery"
+    );
     let mut target = BTreeMap::new();
     let mut backup_images = BTreeMap::new();
     for name in PERSONALIZED {
         let p = backups.join(format!("{name}.img"));
-        r.fastboot.fetch(
-            name,
-            &p,
-            if *name == "boot" {
-                128 * 1024 * 1024
-            } else {
-                1024 * 1024
-            },
-        )?;
+        let range = &layout.partitions[*name];
+        ensure!(
+            range.bytes()?
+                <= if *name == "boot" {
+                    128 * 1024 * 1024
+                } else {
+                    1024 * 1024
+                },
+            "AVB readback exceeds bound"
+        );
+        r.device.read(range, &p)?;
         target.insert((*name).into(), Metadata::read(&p)?);
         backup_images.insert(
             (*name).into(),
@@ -414,6 +347,7 @@ pub fn prepare(r: Prepare<'_>) -> Result<Plan> {
             .verify_embedded(metadata, signature_scratch.path())?;
     }
     verify_chain_keys(&target)?;
+    verify_device_fingerprint(&target["boot"])?;
     let mut output = BTreeMap::new();
     let mut candidate = BTreeMap::new();
     for name in PARTITIONS {
@@ -452,7 +386,21 @@ pub fn prepare(r: Prepare<'_>) -> Result<Plan> {
         fs::rename(&signed, &path)?;
         output.get_mut(*name).context("missing output")?.sha256 = hash_file(&path)?;
     }
-    let plan=Plan{schema_version:1,status:"prepared_not_flashed".into(),device:"TB710FU".into(),serial:r.fastboot.serial.clone(),slot:"a".into(),images:output,backups:backup_images,rollback,tools:json!({"fastboot":r.fastboot.run(&["--version".into()],10)?,"python":run_tool(&r.tools.python,&["--version".into()],Duration::from_secs(10))?.stdout,"avbtool_sha256":hash_file(&r.tools.avbtool)?,"openssl":run_tool(&r.tools.openssl,&["version".into()],Duration::from_secs(10))?.stdout}),firmware_written:false,runtime_verified:false,limitations:vec!["Indices are copied separately from the connected device's signed AVB images, not from protected rollback storage.".into(),"Protected rollback floors and OEM boot acceptance remain unverified. No floor is lowered, erased, disabled or incremented by this tool.".into(),"Only unlocked bootloader fastboot/fastbootd with working partition readback is supported; a complete stock backup and recovery method are required.".into(),"Installation has not been qualified on a second physical tablet.".into()]};
+    let writes = layout::writes(&layout, &output)?;
+    let plan = Plan {
+        schema_version:2, status:"prepared_not_flashed".into(),device:"TB710FU".into(),serial:identity.serial,
+        slot:"a".into(),layout,writes,images:output,backups:backup_images,rollback,
+        tools:json!({"edl":tool_identity,"python":run_tool(&r.tools.python,&["--version".into()],Duration::from_secs(10))?.stdout,
+            "avbtool_sha256":hash_file(&r.tools.avbtool)?,"openssl":run_tool(&r.tools.openssl,&["version".into()],Duration::from_secs(10))?.stdout}),
+        firmware_written:false,runtime_verified:false,
+        limitations:vec![
+            "Indices are copied separately from this device's signed AVB images, not protected rollback storage.".into(),
+            "Protected rollback floors and OEM boot acceptance remain unverified. No floor is lowered, erased, disabled or incremented.".into(),
+            "EDL only: qualified stock programmer, current slot A, matching stock base and unchanged GPT/LP layout required. No bootloader-state or signature-acceptance bypass is implemented.".into(),
+            "Readbacks here cover GPT, LP metadata and three AVB images; they are not a complete stock backup.".into(),
+            "The EDL method has worked on the development tablet; this public installer has not been qualified on a second tablet or on native Windows/macOS USB.".into(),
+        ],
+    };
     write_json(&staging.path().join("install-plan.json"), &plan)?;
     drop(signature_scratch);
     let path = staging.keep();
@@ -486,7 +434,7 @@ fn verify_chain_keys(m: &BTreeMap<String, Metadata>) -> Result<()> {
 pub fn load_plan(work: &Path) -> Result<Plan> {
     let p: Plan = checked_json(&work.join("install-plan.json"))?;
     ensure!(
-        p.schema_version == 1
+        p.schema_version == 2
             && p.device == "TB710FU"
             && p.slot == "a"
             && p.status == "prepared_not_flashed"
@@ -499,6 +447,26 @@ pub fn load_plan(work: &Path) -> Result<Plan> {
             && PERSONALIZED.iter().all(|n| p.rollback.contains_key(*n)),
         "invalid installation plan"
     );
+    p.layout.identity.validate()?;
+    ensure!(
+        p.serial == p.layout.identity.serial && p.writes == layout::writes(&p.layout, &p.images)?,
+        "invalid EDL identity or write map"
+    );
+    ensure!(
+        p.layout.guards.len() <= 34 && !p.layout.guards.is_empty(),
+        "invalid metadata guards"
+    );
+    for g in &p.layout.guards {
+        ensure!(
+            g.filename
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+                && !g.filename.contains("..")
+                && digest_ok(&g.sha256),
+            "unsafe metadata guard"
+        );
+        g.range.bytes()?;
+    }
     for (n, i) in p.images.iter().chain(p.backups.iter()) {
         ensure!(
             i.filename == format!("{n}.img") && digest_ok(&i.sha256) && i.bytes > 0,
@@ -507,57 +475,15 @@ pub fn load_plan(work: &Path) -> Result<Plan> {
     }
     Ok(p)
 }
-pub fn commands(plan: &Plan, work: &Path) -> Vec<Vec<String>> {
-    let mut out = vec![vec!["reboot".into(), "fastboot".into()]];
-    for (i, name) in PARTITIONS.iter().enumerate() {
-        if i == 4 {
-            out.push(vec!["reboot".into(), "bootloader".into()]);
-        }
-        out.push(vec![
-            "flash".into(),
-            format!("{name}_a"),
-            work.join("images")
-                .join(format!("{name}.img"))
-                .display()
-                .to_string(),
-        ]);
-    }
-    let _ = plan;
-    out
-}
-fn enter_mode(fb: &Fastboot, mode: &str) -> Result<()> {
-    fb.run(&["reboot".into(), mode.into()], 30)?;
-    let wanted = if mode == "fastboot" { "yes" } else { "no" };
-    let mut ready = false;
-    for _ in 0..15 {
-        checkpoint()?;
-        if fb.get("is-userspace").ok().as_deref() == Some(wanted) {
-            ready = true;
-            break;
-        }
-        std::thread::sleep(Duration::from_secs(1));
-    }
-    ensure!(
-        ready,
-        "device did not enter the required fastboot mode; stop before further commands"
-    );
-    fb.identify()?;
-    Ok(())
-}
-fn capacities(fb: &Fastboot, plan: &Plan, names: &[&str]) -> Result<()> {
-    for n in names {
-        let capacity = parse_size(&fb.get(&format!("partition-size:{n}_a"))?)?;
-        ensure!(
-            capacity >= plan.images[*n].bytes,
-            "{n}_a is too small; automatic partition resizing is not supported"
-        );
-    }
-    Ok(())
+/// Offline preview, with no transport calls or implicit resets.
+pub fn commands(plan: &Plan, work: &Path) -> Vec<Value> {
+    PARTITIONS.iter().map(|n|json!({"operation":"program_and_verify_sha256","partition":format!("{n}_a"),
+        "range":plan.writes[*n],"image":work.join("images").join(format!("{n}.img")),"sha256":plan.images[*n].sha256})).collect()
 }
 
 pub fn flash(
     work: &Path,
-    fb: &Fastboot,
+    device: &dyn Device,
     confirm: impl FnOnce(&Plan) -> Result<bool>,
 ) -> Result<()> {
     let lock = std::fs::OpenOptions::new()
@@ -570,13 +496,16 @@ pub fn flash(
         .context("another installer owns this work directory")?;
     let plan = load_plan(work)?;
     ensure!(
-        plan.serial == fb.serial,
-        "plan belongs to another device serial"
-    );
-    fb.identify()?;
-    ensure!(
         !work.join("flash-journal.json").exists(),
         "a prior flash attempt exists; inspect the journal and recover manually rather than replaying it"
+    );
+    ensure!(
+        device.tools()? == plan.tools["edl"],
+        "EDL tools changed since preparation"
+    );
+    ensure!(
+        device.identity()? == plan.layout.identity,
+        "wrong UFS identity"
     );
     for (n, i) in &plan.images {
         let p = work.join("images").join(&i.filename);
@@ -588,100 +517,129 @@ pub fn flash(
         );
     }
     let check = tempfile::tempdir_in(work)?;
-    for name in PERSONALIZED {
-        let p = check.path().join(format!("{name}.img"));
-        fb.fetch(
-            name,
-            &p,
-            if *name == "boot" {
-                128 * 1024 * 1024
-            } else {
-                1024 * 1024
-            },
-        )?;
-        ensure!(
-            hash_file(&p)? == plan.backups[*name].sha256,
-            "device AVB state changed since preparation; prepare again before flashing"
-        );
-    }
+    let current_layout = layout::capture(device, check.path())?;
+    ensure!(
+        current_layout == plan.layout
+            && layout::writes(&current_layout, &plan.images)? == plan.writes,
+        "GPT/LP mapping changed since preparation"
+    );
     for name in PERSONALIZED {
         let saved = work.join("device-backup").join(format!("{name}.img"));
         ensure!(
             hash_file(&saved)? == plan.backups[*name].sha256,
             "saved AVB readback changed"
         );
+        // One bounded readback per AVB partition, instead of a multi-gigabyte verification pass.
+        let p = check.path().join(format!("{name}.img"));
+        device.read(&current_layout.partitions[*name], &p)?;
+        ensure!(
+            hash_file(&p)? == plan.backups[*name].sha256,
+            "device AVB state changed since preparation"
+        );
         let current = Metadata::read(&saved)?;
         let prepared = Metadata::read(&work.join("images").join(format!("{name}.img")))?;
         ensure!(
             current.index()? == prepared.index()? && current.index()? == plan.rollback[*name].value,
-            "prepared rollback value differs from this device's readback"
+            "prepared rollback differs from device readback"
         );
     }
-    // Check both logical and physical capacities before the first write.
-    enter_mode(fb, "fastboot")?;
-    capacities(fb, &plan, &PARTITIONS[..4])?;
-    enter_mode(fb, "bootloader")?;
-    capacities(fb, &plan, &PARTITIONS[4..])?;
     ensure!(confirm(&plan)?, "flash cancelled; no firmware written");
-    let mut journal = json!({"schema_version":1,"serial":fb.serial,"plan_sha256":hash_file(&work.join("install-plan.json"))?,"status":"in_progress","completed":[],"automatic_reboot":false});
+    let mut journal = json!({"schema_version":2,"transport":"edl","serial":plan.serial,
+        "plan_sha256":hash_file(&work.join("install-plan.json"))?,"status":"in_progress","completed":[],"pending":null,"automatic_reboot":false});
     write_json(&work.join("flash-journal.json"), &journal)?;
-    for (i, args) in commands(&plan, work).iter().enumerate() {
-        if args[0] == "reboot" {
-            enter_mode(fb, &args[1])?;
-            capacities(
-                fb,
-                &plan,
-                if args[1] == "fastboot" {
-                    &PARTITIONS[..4]
-                } else {
-                    &PARTITIONS[4..]
-                },
-            )?;
-        } else {
-            fb.run(args,600).context("flash failed; leave the device in fastboot and inspect the journal before recovery")?;
-        }
+    for name in PARTITIONS {
+        checkpoint()?;
+        journal["pending"] = json!({"partition":format!("{name}_a"),"range":plan.writes[*name],"sha256":plan.images[*name].sha256});
+        write_json(&work.join("flash-journal.json"), &journal)?;
+        eprintln!("EDL program and device SHA-256: {name}_a");
+        device.program(&plan.writes[*name], &work.join("images").join(format!("{name}.img")), &plan.images[*name].sha256)
+            .context("EDL write/digest failed; leave the tablet in EDL and inspect flash-journal.json; no automatic reset or retry")?;
+        let completed = journal["pending"].clone();
         journal["completed"]
             .as_array_mut()
             .context("journal array")?
-            .push(json!({"step":i,"args":args}));
+            .push(completed);
+        journal["pending"] = Value::Null;
         write_json(&work.join("flash-journal.json"), &journal)?;
     }
-    journal["status"] = json!("written_pending_recovery_and_runtime_validation");
+    journal["status"] = json!("written_digest_verified_pending_recovery_and_runtime_validation");
     write_json(&work.join("flash-journal.json"), &journal)?;
+    Ok(())
+}
+/// Reset is separate from flashing and only available for a fully verified plan.
+pub fn reset(work: &Path, device: &dyn Device) -> Result<()> {
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(work.join(".install-lock"))?;
+    fs2::FileExt::try_lock_exclusive(&lock)?;
+    let p = load_plan(work)?;
+    let j: Value = checked_json(&work.join("flash-journal.json"))?;
+    ensure!(
+        j["status"] == "written_digest_verified_pending_recovery_and_runtime_validation"
+            && j["plan_sha256"] == hash_file(&work.join("install-plan.json"))?
+            && j["serial"] == p.serial
+            && j["pending"].is_null()
+            && j["completed"]
+                .as_array()
+                .is_some_and(|a| a.len() == PARTITIONS.len()),
+        "reset requires this plan's completed verified flash"
+    );
+    ensure!(
+        device.tools()? == p.tools["edl"] && device.identity()? == p.layout.identity,
+        "device or tools differ"
+    );
+    device.reset()
+}
+
+pub const STOCK_BOOT_FINGERPRINT: &str =
+    "Lenovo/TB710FU/TB710FU:15/AQ3A.250129.001/ZUI_17.5.04.059_260327_ROW:user/release-keys";
+fn verify_device_fingerprint(boot: &Metadata) -> Result<()> {
+    let d = &boot.descriptor_bytes;
+    let mut pos = 0;
+    let mut values = BTreeSet::new();
+    while pos < d.len() {
+        let tag = u64::from_be_bytes(d.get(pos..pos + 8).context("descriptor tag")?.try_into()?);
+        let size = usize::try_from(u64::from_be_bytes(
+            d.get(pos + 8..pos + 16)
+                .context("descriptor size")?
+                .try_into()?,
+        ))?
+        .checked_add(16)
+        .context("descriptor overflow")?;
+        let e = d
+            .get(pos..pos.checked_add(size).context("descriptor overflow")?)
+            .context("descriptor bounds")?;
+        if tag == 0 {
+            let key_len = usize::try_from(u64::from_be_bytes(
+                e.get(16..24).context("property key length")?.try_into()?,
+            ))?;
+            let value_len = usize::try_from(u64::from_be_bytes(
+                e.get(24..32).context("property value length")?.try_into()?,
+            ))?;
+            let end = 32_usize.checked_add(key_len).context("property overflow")?;
+            let start = end.checked_add(1).context("property overflow")?;
+            let value_end = start.checked_add(value_len).context("property overflow")?;
+            let key = e.get(32..end).context("property key bounds")?;
+            let value = e.get(start..value_end).context("property value bounds")?;
+            if key == b"com.android.build.boot.fingerprint" {
+                values.insert(std::str::from_utf8(value)?.to_owned());
+            }
+        }
+        pos += size;
+    }
+    ensure!(
+        values.len() == 1 && values.contains(STOCK_BOOT_FINGERPRINT),
+        "device boot fingerprint is not the qualified TB710FU ZUI base"
+    );
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn variables_require_one_exact_nonempty_answer() {
-        assert_eq!(
-            parse_getvar(
-                "partition-size:vbmeta_a",
-                "(bootloader) partition-size:vbmeta_a: 0x10000\nFinished. Total time: 0.1s"
-            )
-            .unwrap(),
-            "0x10000"
-        );
-        for bad in [
-            "",
-            "rollback-index: 7",
-            "product:",
-            "product: TB710FU\nproduct: other",
-            "FAILED (remote: unknown variable)",
-        ] {
-            assert!(parse_getvar("product", bad).is_err());
-        }
-    }
-    #[test]
-    fn sizes_do_not_guess_hex_or_accept_negative_values() {
-        assert_eq!(parse_size("0x10000").unwrap(), 65536);
-        assert_eq!(parse_size("65536").unwrap(), 65536);
-        for bad in ["", "-1", "ff", "0x", "18446744073709551616"] {
-            assert!(parse_size(bad).is_err());
-        }
-    }
     fn metadata(index: u64) -> Metadata {
         Metadata {
             offset: 0,

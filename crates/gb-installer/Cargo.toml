@@ -3,7 +3,7 @@ name = "gb-installer"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
+license = "GPL-3.0-only"
 
 [dependencies]
 anyhow.workspace = true
@@ -15,6 +15,7 @@ tempfile.workspace = true
 flate2.workspace = true
 fs2.workspace = true
 ctrlc.workspace = true
+crc32fast.workspace = true
 gb-core.workspace = true
 gb-partition.workspace = true
 

@@ -78,7 +78,9 @@ The project uses tools such as `avbtool`, `mkfs.erofs`, `fsck.erofs` and
 The device installer has launchers for Windows, Linux and macOS:
 `scripts/install/install.cmd`, `install.ps1` and `install.sh`.
 
-It reads the connected tablet's AVB images, uses that tablet's rollback values
+Installation uses EDL/9008 only, with partition readback and device-side SHA-256
+verification, following the method used for this port. It reads the connected
+tablet's AVB images, uses that tablet's rollback values
 separately for each chain location, and re-signs local copies before flashing.
 Release templates must be personalized; do not flash them directly. A command
 preview is the default, and writing requires an explicit option plus typed
@@ -86,8 +88,10 @@ confirmation. Unsupported device readback stops the process.
 
 Read the [installation guide](releases/alpha1/INSTALL.md) for host dependencies,
 keys, exact stock-base requirements and the current testing limits. The public
-installer requires an unlocked bootloader. Protected rollback floors cannot be
-inferred from an image header and are reported as unknown.
+installer requires the matching stock programmer and an EDL-capable tablet that
+accepts the configured signing chain. The development tablet boots with its
+bootloader locked; other units remain unqualified. Protected rollback floors
+cannot be inferred from an image header and are reported as unknown.
 
 ## Inspect firmware
 
@@ -145,10 +149,11 @@ revisions; do not apply the series blindly to another kernel or tablet.
 Host tests cover parsers, manifests, compatibility rules, cache behavior and
 patch contracts. Hardware tests require the tablet and external firmware inputs.
 Some integration tests are ignored by default for that reason.
-The installer also has signed-image tests with a simulated USB backend:
+The installer also has signed-image tests with a simulated EDL backend:
 
 ```sh
-cargo test --locked -p gb-installer --test device_install -- --ignored
+cargo test --locked -p gb-installer -- --include-ignored
+python3 -m unittest discover -s tests -p test_edl_installer_bridge.py
 ```
 
 Those tests require Python 3 and OpenSSL; they never access a physical USB device.
@@ -163,7 +168,9 @@ Thanks to [gbos-vm](https://github.com/skylartaylor/gbos-vm),
 [Droid-VM](https://github.com/Droid-VM), and the Android, Linux, crosvm and Mesa
 projects for the upstream work this port builds on.
 
-Project code is licensed under [Apache 2.0](LICENSE). Third-party code and
+Project code is licensed under [Apache 2.0](LICENSE), except the EDL installer
+and Python bridge, which use [GPLv3](third_party/edl-bridge/LICENSE). They use
+[B. Kerler's EDL client](https://github.com/bkerler/edl). Third-party code and
 patches retain their own licenses, including GPL kernel components, BSD crosvm
 code and MIT Mesa code. See the component notices alongside those files.
 Googlebook OS and Lenovo firmware remain external dependencies.
