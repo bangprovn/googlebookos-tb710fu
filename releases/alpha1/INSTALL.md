@@ -5,6 +5,10 @@ and device-digest method used for this port. There is no fastboot install path.
 Release images are zero-index AVB templates: **do not flash them directly**.
 The installer first prepares signed copies using your tablet's own indices.
 
+Prefer a GUI for the write step? See [Flashing with LTBox](LTBOX.md) for the
+backup, prepared-image export, Simple Firmware Flasher and verification workflow.
+LTBox resets automatically; the native installer keeps reset separate.
+
 Supported hardware: Lenovo **TB710FU**, SM8650Q, 8 GB RAM, Android 16 global base
 `ZUI_17.5.04.059_260327_ROW` / `BP2A.250605.031.A3`. Its retained boot AVB
 fingerprint identifies the inherited Android 15 kernel build; this is expected.

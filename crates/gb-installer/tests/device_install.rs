@@ -194,6 +194,7 @@ impl Disk {
             disk[sector * 4096..sector * 4096 + bytes.len()].copy_from_slice(&bytes);
         }
         fs::write(root.join("lun.img"), disk).unwrap();
+        fs::write(root.join("loader.melf"), b"simulated programmer").unwrap();
         Self {
             root: root.into(),
             calls: RefCell::new(Vec::new()),
@@ -219,7 +220,9 @@ impl Disk {
 }
 impl Device for Disk {
     fn tools(&self) -> anyhow::Result<serde_json::Value> {
-        Ok(json!({"transport":"simulated_edl"}))
+        Ok(
+            json!({"transport":"simulated_edl","loader_sha256":hash_file(&self.root.join("loader.melf"))?}),
+        )
     }
     fn identity(&self) -> anyhow::Result<Identity> {
         anyhow::ensure!(!self.marker("wrong-device"), "wrong UFS serial");
@@ -243,6 +246,7 @@ impl Device for Disk {
         Ok(())
     }
     fn digest(&self, r: &Range) -> anyhow::Result<String> {
+        self.calls.borrow_mut().push("digest".into());
         use sha2::{Digest, Sha256};
         let mut f = fs::File::open(self.root.join("lun.img"))?;
         f.seek(SeekFrom::Start(r.start_sector * 4096))?;
@@ -425,7 +429,8 @@ fn signed_personalization_preview_and_partial_failure_are_device_bound() {
     assert!(gb_installer::flash(&f.work, &f.edl, |_| Ok(false)).is_err());
     assert!(!f.work.join("flash-journal.json").exists());
     fs::write(f.root.join("fail-product"), b"").unwrap();
-    assert!(gb_installer::flash(&f.work, &f.edl, |_| Ok(true)).is_err());
+    let error = gb_installer::flash(&f.work, &f.edl, |_| Ok(true)).unwrap_err();
+    assert!(format!("{error:#}").contains("program NACK"), "{error:#}");
     let count = f.calls().len();
     assert!(gb_installer::flash(&f.work, &f.edl, |_| Ok(true)).is_err());
     assert_eq!(count, f.calls().len());
@@ -599,4 +604,109 @@ fn virtual_ab_header_is_supported_but_active_overlays_are_blocked() {
         let error = gb_installer::layout::capture(&d, out.path()).unwrap_err();
         assert!(error.to_string().contains("LP overlays"), "{error:#}");
     }
+}
+
+#[test]
+#[ignore = "requires host Python3 and OpenSSL; simulated EDL only"]
+fn ltbox_export_uses_only_prepared_device_ranges_and_blocks_native_replay() {
+    let f = Fixture::new();
+    let plan = f.prepare().unwrap();
+    let out = gb_installer::ltbox::export(&f.work, &f.edl, &f.root.join("loader.melf")).unwrap();
+    assert!(f.calls().iter().all(|c| c == "read"));
+    let parsed=Command::new("python3").args(["-c", "import json,sys,xml.etree.ElementTree as E; r=E.parse(sys.argv[1]).getroot(); assert r.tag=='data'; assert all(x.tag=='program' for x in r); print(json.dumps([x.attrib for x in r]))",out.join("rawprogram_googlebookos.xml").to_str().unwrap()]).output().unwrap();
+    assert!(parsed.status.success());
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&parsed.stdout).unwrap();
+    assert_eq!(rows.len(), 9);
+    for (name, row) in gb_installer::PARTITIONS.iter().zip(rows) {
+        assert_eq!(row["filename"], format!("{name}.img"));
+        assert_eq!(row["label"], format!("{name}_a"));
+        assert_eq!(
+            row["start_sector"],
+            plan.writes[*name].start_sector.to_string()
+        );
+        assert_eq!(
+            row["physical_partition_number"],
+            plan.writes[*name].lun.to_string()
+        );
+        assert_eq!(
+            row["num_partition_sectors"],
+            plan.writes[*name].sectors.to_string()
+        );
+        assert_eq!(row["SECTOR_SIZE_IN_BYTES"], "4096");
+        assert_eq!(row["file_sector_offset"], "0");
+        assert_eq!(row["sparse"], "false");
+        assert_eq!(
+            hash_file(&out.join(format!("{name}.img"))).unwrap(),
+            plan.images[*name].sha256
+        );
+    }
+    assert_eq!(fs::read_dir(&out).unwrap().count(), 13);
+    assert_eq!(
+        hash_file(&out.join("xbl_s_devprg_ns.melf")).unwrap(),
+        hash_file(&f.root.join("loader.melf")).unwrap()
+    );
+    let count = f.calls().len();
+    assert!(gb_installer::flash(&f.work, &f.edl, |_| Ok(true)).is_err());
+    assert_eq!(f.calls().len(), count);
+    assert!(!f.work.join("flash-journal.json").exists());
+    assert!(gb_installer::ltbox::export(&f.work, &f.edl, &f.root.join("loader.melf")).is_err());
+}
+#[test]
+#[ignore = "requires host Python3 and OpenSSL; simulated EDL only"]
+fn ltbox_postverification_reads_nine_digests_and_records_failures_without_writes_or_reset() {
+    let f = Fixture::new();
+    let plan = f.prepare().unwrap();
+    gb_installer::ltbox::export(&f.work, &f.edl, &f.root.join("loader.melf")).unwrap();
+    // Simulate the external rawprogram writer independently of native flash().
+    for name in gb_installer::PARTITIONS {
+        f.edl
+            .program(
+                &plan.writes[*name],
+                &f.work.join("ltbox").join(format!("{name}.img")),
+                &plan.images[*name].sha256,
+            )
+            .unwrap();
+    }
+    f.edl.calls.borrow_mut().clear();
+    gb_installer::ltbox::verify(&f.work, &f.edl).unwrap();
+    assert_eq!(
+        f.calls().iter().filter(|c| c.as_str() == "digest").count(),
+        9
+    );
+    assert!(f.calls().iter().all(|c| c == "read" || c == "digest"));
+    let report = || -> serde_json::Value {
+        serde_json::from_slice(&fs::read(f.work.join("ltbox-verification.json")).unwrap()).unwrap()
+    };
+    assert_eq!(
+        report()["status"],
+        "all_nine_device_images_match_prepared_plan"
+    );
+    assert_eq!(report()["reset_sent"], false);
+    assert_eq!(report()["runtime_verified"], false);
+    f.edl.change(plan.writes["system"].start_sector * 4096);
+    assert!(gb_installer::ltbox::verify(&f.work, &f.edl).is_err());
+    assert_eq!(report()["status"], "failed");
+    assert_eq!(report()["verified"], json!([]));
+    assert!(!f.work.join("flash-journal.json").exists());
+    assert!(f.calls().iter().all(|c| c == "read" || c == "digest"));
+}
+#[test]
+#[ignore = "requires host Python3 and OpenSSL; simulated EDL only"]
+fn ltbox_export_rejects_changed_programmer_images_and_device_layout() {
+    let f = Fixture::new();
+    f.prepare().unwrap();
+    let bad = f.root.join("wrong-loader");
+    fs::write(&bad, b"wrong").unwrap();
+    let count = f.calls().len();
+    assert!(gb_installer::ltbox::export(&f.work, &f.edl, &bad).is_err());
+    assert_eq!(count, f.calls().len());
+    let disk = fs::read(f.root.join("lun.img")).unwrap();
+    f.edl.change(4096 + 16);
+    assert!(gb_installer::ltbox::export(&f.work, &f.edl, &f.root.join("loader.melf")).is_err());
+    fs::write(f.root.join("lun.img"), disk).unwrap();
+    fs::write(f.work.join("images/system.img"), b"modified").unwrap();
+    assert!(gb_installer::ltbox::export(&f.work, &f.edl, &f.root.join("loader.melf")).is_err());
+    assert!(!f.work.join("ltbox").exists());
+    assert!(!f.work.join("ltbox-handoff.json").exists());
+    assert!(f.calls().iter().all(|c| c == "read"));
 }

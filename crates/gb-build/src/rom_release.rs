@@ -114,6 +114,7 @@ impl Request {
             ensure!(
                 [
                     "INSTALL.md",
+                    "LTBOX.md",
                     "KNOWN_ISSUES.md",
                     "LICENSE",
                     "NOTICE.md",

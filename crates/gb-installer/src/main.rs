@@ -81,6 +81,24 @@ enum Command {
         #[command(flatten)]
         signing: Signing,
     },
+    /// Export personalized images and a device-specific rawprogram for LTBox. Reads only.
+    ExportLtbox {
+        #[arg(long)]
+        work: PathBuf,
+        #[arg(long)]
+        serial: String,
+        #[command(flatten)]
+        transport: Transport,
+    },
+    /// Read-only EDL digest verification after an external LTBox flash. No reset.
+    VerifyLtbox {
+        #[arg(long)]
+        work: PathBuf,
+        #[arg(long)]
+        serial: String,
+        #[command(flatten)]
+        transport: Transport,
+    },
     /// Offline preview. --execute additionally needs EDL options and typed confirmation.
     Flash {
         #[arg(long)]
@@ -149,6 +167,28 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&plan)?);
             println!(
                 "Prepared only; no persistent firmware writes or reset. Review install-plan.json and keep a complete stock backup."
+            );
+        }
+        Command::ExportLtbox {
+            work,
+            serial,
+            transport,
+        } => {
+            let output =
+                gb_installer::ltbox::export(&work, &transport.edl(serial), &transport.loader)?;
+            println!("LTBox folder: {}", output.display());
+            println!(
+                "No firmware written. Use Advanced > Simple Firmware Flasher with this folder only. LTBox resets automatically and does not run our per-write digest checks; follow LTBOX.md."
+            );
+        }
+        Command::VerifyLtbox {
+            work,
+            serial,
+            transport,
+        } => {
+            gb_installer::ltbox::verify(&work, &transport.edl(serial))?;
+            println!(
+                "All nine device images match the prepared plan; see ltbox-verification.json. No write or reset sent. Runtime validation remains required."
             );
         }
         Command::Flash {

@@ -75,6 +75,10 @@ The project uses tools such as `avbtool`, `mkfs.erofs`, `fsck.erofs` and
 
 ## Install on TB710FU
 
+For a GUI, follow the [LTBox flashing guide](releases/alpha1/LTBOX.md). It uses
+our per-device preparation and exported rawprogram, followed by LTBox's
+Simple Firmware Flasher and a read-only verification pass.
+
 The device installer has launchers for Windows, Linux and macOS:
 `scripts/install/install.cmd`, `install.ps1` and `install.sh`.
 

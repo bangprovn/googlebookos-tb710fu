@@ -2,6 +2,7 @@
 pub mod avb;
 pub mod edl;
 pub mod layout;
+pub mod ltbox;
 use anyhow::{Context, Result, ensure};
 use avb::{Metadata, Tools};
 use edl::Device;
@@ -481,11 +482,7 @@ pub fn commands(plan: &Plan, work: &Path) -> Vec<Value> {
         "range":plan.writes[*n],"image":work.join("images").join(format!("{n}.img")),"sha256":plan.images[*n].sha256})).collect()
 }
 
-pub fn flash(
-    work: &Path,
-    device: &dyn Device,
-    confirm: impl FnOnce(&Plan) -> Result<bool>,
-) -> Result<()> {
+fn lock_work(work: &Path) -> Result<File> {
     let lock = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -494,11 +491,9 @@ pub fn flash(
         .open(work.join(".install-lock"))?;
     fs2::FileExt::try_lock_exclusive(&lock)
         .context("another installer owns this work directory")?;
-    let plan = load_plan(work)?;
-    ensure!(
-        !work.join("flash-journal.json").exists(),
-        "a prior flash attempt exists; inspect the journal and recover manually rather than replaying it"
-    );
+    Ok(lock)
+}
+fn preflight(work: &Path, device: &dyn Device, plan: &Plan, original_avb: bool) -> Result<()> {
     ensure!(
         device.tools()? == plan.tools["edl"],
         "EDL tools changed since preparation"
@@ -523,26 +518,48 @@ pub fn flash(
             && layout::writes(&current_layout, &plan.images)? == plan.writes,
         "GPT/LP mapping changed since preparation"
     );
-    for name in PERSONALIZED {
-        let saved = work.join("device-backup").join(format!("{name}.img"));
-        ensure!(
-            hash_file(&saved)? == plan.backups[*name].sha256,
-            "saved AVB readback changed"
-        );
-        // One bounded readback per AVB partition, instead of a multi-gigabyte verification pass.
-        let p = check.path().join(format!("{name}.img"));
-        device.read(&current_layout.partitions[*name], &p)?;
-        ensure!(
-            hash_file(&p)? == plan.backups[*name].sha256,
-            "device AVB state changed since preparation"
-        );
-        let current = Metadata::read(&saved)?;
-        let prepared = Metadata::read(&work.join("images").join(format!("{name}.img")))?;
-        ensure!(
-            current.index()? == prepared.index()? && current.index()? == plan.rollback[*name].value,
-            "prepared rollback differs from device readback"
-        );
+    if original_avb {
+        for name in PERSONALIZED {
+            let saved = work.join("device-backup").join(format!("{name}.img"));
+            ensure!(
+                hash_file(&saved)? == plan.backups[*name].sha256,
+                "saved AVB readback changed"
+            );
+            // One bounded readback per AVB partition, instead of a multi-gigabyte verification pass.
+            let p = check.path().join(format!("{name}.img"));
+            device.read(&current_layout.partitions[*name], &p)?;
+            ensure!(
+                hash_file(&p)? == plan.backups[*name].sha256,
+                "device AVB state changed since preparation"
+            );
+            let current = Metadata::read(&saved)?;
+            let prepared = Metadata::read(&work.join("images").join(format!("{name}.img")))?;
+            ensure!(
+                current.index()? == prepared.index()?
+                    && current.index()? == plan.rollback[*name].value,
+                "prepared rollback differs from device readback"
+            );
+        }
     }
+    Ok(())
+}
+
+pub fn flash(
+    work: &Path,
+    device: &dyn Device,
+    confirm: impl FnOnce(&Plan) -> Result<bool>,
+) -> Result<()> {
+    let _lock = lock_work(work)?;
+    let plan = load_plan(work)?;
+    ensure!(
+        !work.join("flash-journal.json").exists(),
+        "a prior flash attempt exists; inspect the journal and recover manually rather than replaying it"
+    );
+    ensure!(
+        !work.join("ltbox-handoff.json").exists(),
+        "this work directory was handed to LTBox; inspect that external run instead of replaying the native flash command"
+    );
+    preflight(work, device, &plan, true)?;
     ensure!(confirm(&plan)?, "flash cancelled; no firmware written");
     let mut journal = json!({"schema_version":2,"transport":"edl","serial":plan.serial,
         "plan_sha256":hash_file(&work.join("install-plan.json"))?,"status":"in_progress","completed":[],"pending":null,"automatic_reboot":false});
