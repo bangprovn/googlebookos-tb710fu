@@ -26,7 +26,7 @@ and compare its archive's SHA-256 with the matching `.sha256` asset.
 | Linux | Extract the matching x86_64/arm64 archive, or install the matching DEB/RPM package. Launch `ltbox`. |
 | macOS | Extract `LTBox-macos_universal-v3.3.5.tar.gz` and launch the supplied application. |
 
-Follow LTBox's [USB and platform setup instructions](https://miner7222.github.io/LTBox/).
+Follow LTBox's [USB and platform setup instructions](https://miner7222.github.io/ltbox/en/index.html).
 Use the matching stock TB710FU `xbl_s_devprg_ns.melf` programmer described in
 [Before starting](INSTALL.md#before-starting). LTBox does not make a mismatched
 programmer, firmware base or signing chain compatible.
