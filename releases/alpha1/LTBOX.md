@@ -27,6 +27,13 @@ and compare its archive's SHA-256 with the matching `.sha256` asset.
 | macOS | Extract `LTBox-macos_universal-v3.3.5.tar.gz` and launch the supplied application. |
 
 Follow LTBox's [USB and platform setup instructions](https://miner7222.github.io/ltbox/en/index.html).
+On Windows and Linux, use **Settings → Qualcomm USB driver → userspace** for
+this workflow, alongside the libusb-based preparation client. Install the
+required driver/access rules, then reconnect USB. LTBox's default kernel-driver
+mode is a different transport. On macOS, LTBox bundles libusb; the command-line
+Python environment still needs the libusb setup from [INSTALL.md](INSTALL.md).
+Confirm both clients can access EDL separately before proceeding.
+
 Use the matching stock TB710FU `xbl_s_devprg_ns.melf` programmer described in
 [Before starting](INSTALL.md#before-starting). LTBox does not make a mismatched
 programmer, firmware base or signing chain compatible.
