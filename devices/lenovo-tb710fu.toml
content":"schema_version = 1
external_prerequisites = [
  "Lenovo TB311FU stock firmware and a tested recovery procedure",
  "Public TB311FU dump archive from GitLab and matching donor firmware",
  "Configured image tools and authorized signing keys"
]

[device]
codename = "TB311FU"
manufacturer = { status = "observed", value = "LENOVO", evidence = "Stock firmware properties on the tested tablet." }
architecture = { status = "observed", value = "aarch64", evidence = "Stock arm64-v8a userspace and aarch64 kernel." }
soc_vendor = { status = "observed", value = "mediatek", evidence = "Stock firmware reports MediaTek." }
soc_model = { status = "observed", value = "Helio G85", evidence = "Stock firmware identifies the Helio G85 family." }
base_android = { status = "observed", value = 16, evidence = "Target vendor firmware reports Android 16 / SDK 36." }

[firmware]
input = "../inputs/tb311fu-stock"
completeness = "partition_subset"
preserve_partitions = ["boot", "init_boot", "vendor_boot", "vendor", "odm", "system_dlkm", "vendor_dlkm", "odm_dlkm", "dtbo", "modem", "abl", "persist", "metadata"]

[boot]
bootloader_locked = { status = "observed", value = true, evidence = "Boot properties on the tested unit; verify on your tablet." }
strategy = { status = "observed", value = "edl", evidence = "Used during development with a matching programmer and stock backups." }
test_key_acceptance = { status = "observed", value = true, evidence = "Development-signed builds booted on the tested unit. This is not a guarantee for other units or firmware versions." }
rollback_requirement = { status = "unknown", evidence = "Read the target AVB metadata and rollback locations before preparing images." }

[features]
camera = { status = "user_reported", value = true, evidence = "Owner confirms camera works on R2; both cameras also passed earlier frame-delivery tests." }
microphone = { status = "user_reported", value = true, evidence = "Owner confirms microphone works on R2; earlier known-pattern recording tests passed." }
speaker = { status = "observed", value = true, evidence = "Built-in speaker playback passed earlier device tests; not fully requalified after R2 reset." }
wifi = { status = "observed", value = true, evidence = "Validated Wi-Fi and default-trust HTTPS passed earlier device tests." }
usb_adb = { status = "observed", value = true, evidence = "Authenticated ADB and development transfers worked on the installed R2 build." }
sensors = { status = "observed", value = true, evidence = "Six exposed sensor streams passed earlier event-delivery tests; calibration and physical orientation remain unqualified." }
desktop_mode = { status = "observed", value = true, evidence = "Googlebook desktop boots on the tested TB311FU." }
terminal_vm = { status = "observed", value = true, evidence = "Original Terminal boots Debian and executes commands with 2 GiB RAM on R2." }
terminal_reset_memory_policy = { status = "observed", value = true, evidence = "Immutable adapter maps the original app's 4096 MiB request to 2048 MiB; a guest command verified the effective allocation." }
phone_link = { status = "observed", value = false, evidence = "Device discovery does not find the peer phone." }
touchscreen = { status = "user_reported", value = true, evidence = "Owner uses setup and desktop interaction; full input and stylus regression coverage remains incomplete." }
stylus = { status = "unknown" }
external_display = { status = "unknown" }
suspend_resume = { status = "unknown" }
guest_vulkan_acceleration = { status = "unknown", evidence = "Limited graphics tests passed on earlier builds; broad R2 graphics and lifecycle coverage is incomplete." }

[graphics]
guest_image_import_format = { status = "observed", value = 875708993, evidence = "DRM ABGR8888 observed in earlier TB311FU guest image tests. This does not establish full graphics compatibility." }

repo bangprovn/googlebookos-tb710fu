@@ -1,0 +1,154 @@
+# Googlebook OS for Lenovo TB311FU
+
+Googlebook OS port for the Lenovo TB311FU using the public stock dump source:
+https://gitlab.com/Van-Firmware-Dumps/lenovo/TB311FU
+
+This repository is configured around the TB311FU device profile, with the stock
+firmware kept external to the project. The donor is the Dell XPS Googlebook,
+codename `mica`.
+
+The port brings over the Googlebook desktop and system stack while retaining
+the tablet's vendor hardware support. The current build uses a matching Android 16
+stock base and a modified Linux 6.1 kernel from the device's Android kernel tree.
+
+This repository contains the Rust tools, device profile, kernel changes and
+userspace patches. Firmware images, proprietary apps and libraries, signing
+keys, and EDL programmers are not included.
+
+## Stock firmware and dumps
+
+Use the public Lenovo TB311FU dump archive as the stock firmware source for this
+port:
+
+- https://gitlab.com/Van-Firmware-Dumps/lenovo/TB311FU
+
+Download the matching release contents locally and place them under a project-local
+folder such as `inputs/tb311fu-stock/` before preparing images.
+
+## Working features
+
+Googlebook OS boots on the tablet with the desktop, Android setup and the
+original Terminal app. Camera and microphone are working in the owner's R2
+installation as well.
+
+| Feature | Status |
+| --- | --- |
+| Desktop and tablet interaction | Working on TB311FU. |
+| Touchscreen | Working for setup and desktop interaction. |
+| Android setup | Owner confirms setup completes after a factory reset. |
+| Camera | Owner confirms it works; both cameras passed earlier frame-delivery tests. |
+| Microphone | Owner confirms it works; earlier speaker/microphone pattern tests passed. |
+| Built-in speakers | Playback passed earlier device tests. |
+| Wi-Fi / Internet | Validated Wi-Fi and HTTPS worked in earlier device tests. |
+| Sensors | Accelerometer, gyroscope, light, game rotation, gravity and linear acceleration delivered events. |
+| USB / ADB | Authenticated ADB and development transfers work. |
+| Terminal / Debian VM | Boots and runs commands with 2 GiB RAM. |
+| Terminal after reset | Firmware maps the app's fresh 4 GiB request to 2 GiB. The menu may still show 4 GB. |
+
+## Known issues
+
+- **Phone Link:** device discovery does not find the peer phone.
+- **VM graphics:** GLES and limited Vulkan tests passed on earlier builds;
+  broader native presentation, resizing and resume still need fixes.
+- **Terminal lifecycle:** a rapid forced stop/restart can hit a resource-busy
+  error until teardown finishes. Its memory menu can still display 4 GB.
+- **User selection:** some EDL resets require selecting the existing main user.
+- **Google services:** donor-specific Perks/serviceability is unsupported;
+  Play certification is not established.
+- **Updates:** there is no port OTA channel. Do not install donor hardware OTAs.
+
+Bluetooth pairing/audio, external display, stylus and deep suspend/resume are
+not fully tested. They are separate from the working features above.
+
+Alpha 1 uses device-specific AVB preparation for the matching Android 16 stock
+base. Clean installation on a second tablet has not been tested.
+
+## Build the tools
+
+Use a Linux x86_64 host with Rust stable (minimum 1.88).
+
+```sh
+git clone https://github.com/miriacpf19889-blip/googlebookos-tb311fu-dev.git
+cd googlebookos-tb311fu-dev
+cargo build --release --locked -p gb-cli
+target/release/gb --help
+```
+
+Firmware processing also needs separately installed Android image tools.
+Each image recipe specifies its tool paths, checksums and sandbox settings.
+The project uses tools such as `avbtool`, `mkfs.erofs`, `fsck.erofs` and
+`mkbootimg` rather than replacing them with custom filesystem writers.
+
+## Install on TB311FU
+
+For a GUI, follow the [LTBox flashing guide](releases/alpha1/LTBOX.md). It uses
+our per-device preparation and exported rawprogram, followed by LTBox's
+Simple Firmware Flasher and a read-only verification pass.
+
+The device installer has launchers for Windows, Linux and macOS:
+`scripts/install/install.cmd`, `install.ps1` and `install.sh`.
+
+Installation uses EDL/9008 only, with partition readback and device-side SHA-256
+verification. It reads the connected tablet's AVB images, uses that tablet's
+rollback values separately for each chain location, and re-signs local copies
+before flashing. Release templates must be personalized; do not flash them
+directly. A command preview is the default, and writing requires an explicit
+option plus typed confirmation. Unsupported device readback stops the process.
+
+Read the [installation guide](releases/alpha1/INSTALL.md) for host dependencies,
+keys, exact stock-base requirements and the current testing limits. The public
+installer requires the matching stock programmer and an EDL-capable tablet that
+accepts the configured signing chain.
+
+## Inspect firmware
+
+Provide your own donor recovery image and stock tablet firmware. Inspection
+reads the inputs without modifying them.
+
+```sh
+target/release/gb donor inspect mica-recovery.zip --out artifacts/mica.json
+target/release/gb firmware inspect inputs/tb311fu-stock/ --out artifacts/stock.json
+
+target/release/gb compat manifests \
+  --donor artifacts/mica.json \
+  --target artifacts/stock.json \
+  --out artifacts/compatibility.json
+```
+
+Start with [the TB311FU profile](devices/lenovo-tb311fu.toml),
+[the generic device example](devices/example-tablet.toml), and
+[the mica donor profile](donors/mica.toml). Input paths are placeholders;
+firmware must be acquired separately.
+
+`gb port --help` lists the image assembly, signing and build commands.
+
+## Source layout
+
+- `crates/`: firmware inspection, compatibility checks, build/cache orchestration,
+  image assembly, AVB, VINTF, SELinux, and runtime test tools.
+- `patches/tb311fu/`: kernel, Gunyah, crosvm, graphics and Android integration changes.
+- `devices/` and `donors/`: typed profiles with observed facts kept separate from unknowns.
+- `tests/`: host tests and small fixtures; no firmware dumps.
+- `scripts/`: USB setup and diagnostic helpers.
+
+The [kernel patch notes](patches/tb311fu/kernel/README.md) describe the Gunyah
+changes and their source dependencies.
+
+## Tests
+
+```sh
+./scripts/check.sh
+```
+
+Host tests cover parsers, manifests, compatibility rules, cache behavior and
+patch contracts. Hardware tests require the tablet and external firmware inputs.
+Some integration tests are ignored by default for that reason.
+
+## Credits and license
+
+Thanks to [gbos-vm](https://github.com/skylartaylor/gbos-vm),
+[Droid-VM](https://github.com/Droid-VM), and the Android, Linux, crosvm and Mesa
+projects for the upstream work this port builds on.
+
+Project code is licensed under [Apache 2.0](LICENSE), except the EDL installer
+and Python bridge, which use [GPLv3](third_party/edl-bridge/LICENSE).
