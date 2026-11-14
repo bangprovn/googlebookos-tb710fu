@@ -3,6 +3,8 @@
 Googlebook OS port for the Lenovo TB710FU (Qualcomm SM8650Q).
 The donor is the Dell XPS Googlebook, codename `mica`.
 
+**Website:** [bangprovn.github.io/googlebookos-tb710fu](https://bangprovn.github.io/googlebookos-tb710fu/)
+
 The port brings over the Googlebook desktop and system stack while retaining
 the tablet's vendor hardware support. The current build uses
 `CL3B.260622.276.R2` userspace and a modified Linux 6.1 kernel from the
